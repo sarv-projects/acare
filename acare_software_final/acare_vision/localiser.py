@@ -73,6 +73,20 @@ class Localiser:
         except Exception:
             pass  # use placeholders
 
+    def update_intrinsics(self, fx: float, fy: float, cx: float, cy: float):
+        """
+        Update camera intrinsics from a live CameraInfo topic.
+        This lets the system use the driver's calibrated values immediately
+        without waiting for system.yaml to be rewritten.
+        """
+        values = [fx, fy, cx, cy]
+        if not all(np.isfinite(v) and float(v) > 0.0 for v in values):
+            return
+        self.fx = float(fx)
+        self.fy = float(fy)
+        self.cx = float(cx)
+        self.cy = float(cy)
+
     def pixel_to_robot(self, bbox: tuple, depth_frame: np.ndarray):
         """
         Converts a bounding box centre pixel + depth to 3D robot-frame coordinates.

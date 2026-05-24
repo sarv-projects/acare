@@ -36,6 +36,9 @@ EXPECTED_TOPICS = {
     "/safety_alert",
     "/emergency_stop",
 }
+EXPECTED_SERVICES = {
+    "/enrol_staff",
+}
 
 FORBIDDEN_ENDPOINTS = {
     "/raw_transcript": {"/voice_node": "subscriber"},
@@ -68,6 +71,11 @@ def get_topics() -> set[str]:
 
 def topic_info(topic: str) -> str:
     return run(["ros2", "topic", "info", "-v", topic])
+
+
+def get_services() -> set[str]:
+    output = run(["ros2", "service", "list"])
+    return {line.strip() for line in output.splitlines() if line.strip()}
 
 
 def parse_endpoints(info_text: str) -> dict[str, set[str]]:
@@ -105,6 +113,14 @@ def main() -> int:
         print("FAILED: missing topics")
         for topic in missing_topics:
             print(f"  {topic}")
+        return 1
+
+    services = get_services()
+    missing_services = sorted(EXPECTED_SERVICES - services)
+    if missing_services:
+        print("FAILED: missing services")
+        for service in missing_services:
+            print(f"  {service}")
         return 1
 
     loopback_errors: list[str] = []
