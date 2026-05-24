@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>urdf_assembly_6dof_moveit_config</name>
+  <version>0.0.1</version>
+  <description>MoveIt package</description>
+
+  <maintainer email="test@test.com">user</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>moveit_ros_visualization</exec_depend>
+
+</package>

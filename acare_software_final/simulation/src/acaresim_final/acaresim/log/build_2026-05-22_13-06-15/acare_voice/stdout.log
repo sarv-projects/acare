@@ -1,0 +1,22 @@
+running develop
+running egg_info
+creating acare_voice.egg-info
+writing acare_voice.egg-info/PKG-INFO
+writing dependency_links to acare_voice.egg-info/dependency_links.txt
+writing entry points to acare_voice.egg-info/entry_points.txt
+writing requirements to acare_voice.egg-info/requires.txt
+writing top-level names to acare_voice.egg-info/top_level.txt
+writing manifest file 'acare_voice.egg-info/SOURCES.txt'
+reading manifest file 'acare_voice.egg-info/SOURCES.txt'
+writing manifest file 'acare_voice.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/lib/python3.12/site-packages/acare-voice.egg-link (link to .)
+Installing voice_ros_node script to /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/bin
+
+Installed /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_voice
+running symlink_data
+creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/share/ament_index
+creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/share/ament_index/resource_index
+creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/share/ament_index/resource_index/packages
+symbolically linking /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_voice/resource/acare_voice -> /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/share/ament_index/resource_index/packages
+symbolically linking /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_voice/package.xml -> /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_voice/share/acare_voice

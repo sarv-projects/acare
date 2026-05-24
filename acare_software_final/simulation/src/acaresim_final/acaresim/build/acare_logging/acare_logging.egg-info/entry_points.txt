@@ -1,0 +1,2 @@
+[console_scripts]
+log_node = log_node:main

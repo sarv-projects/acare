@@ -1,0 +1,187 @@
+// generated from rosidl_typesupport_introspection_cpp/resource/idl__type_support.cpp.em
+// with input from acare_msgs:msg/ValidatedIntent.idl
+// generated code does not contain a copyright notice
+
+#include "array"
+#include "cstddef"
+#include "string"
+#include "vector"
+#include "rosidl_runtime_c/message_type_support_struct.h"
+#include "rosidl_typesupport_cpp/message_type_support.hpp"
+#include "rosidl_typesupport_interface/macros.h"
+#include "acare_msgs/msg/detail/validated_intent__functions.h"
+#include "acare_msgs/msg/detail/validated_intent__struct.hpp"
+#include "rosidl_typesupport_introspection_cpp/field_types.hpp"
+#include "rosidl_typesupport_introspection_cpp/identifier.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_type_support_decl.hpp"
+#include "rosidl_typesupport_introspection_cpp/visibility_control.h"
+
+namespace acare_msgs
+{
+
+namespace msg
+{
+
+namespace rosidl_typesupport_introspection_cpp
+{
+
+void ValidatedIntent_init_function(
+  void * message_memory, rosidl_runtime_cpp::MessageInitialization _init)
+{
+  new (message_memory) acare_msgs::msg::ValidatedIntent(_init);
+}
+
+void ValidatedIntent_fini_function(void * message_memory)
+{
+  auto typed_message = static_cast<acare_msgs::msg::ValidatedIntent *>(message_memory);
+  typed_message->~ValidatedIntent();
+}
+
+static const ::rosidl_typesupport_introspection_cpp::MessageMember ValidatedIntent_message_member_array[5] = {
+  {
+    "tool",  // name
+    ::rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING,  // type
+    0,  // upper bound of string
+    nullptr,  // members of sub message
+    false,  // is key
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(acare_msgs::msg::ValidatedIntent, tool),  // bytes offset in struct
+    nullptr,  // default value
+    nullptr,  // size() function pointer
+    nullptr,  // get_const(index) function pointer
+    nullptr,  // get(index) function pointer
+    nullptr,  // fetch(index, &value) function pointer
+    nullptr,  // assign(index, value) function pointer
+    nullptr  // resize(index) function pointer
+  },
+  {
+    "action",  // name
+    ::rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING,  // type
+    0,  // upper bound of string
+    nullptr,  // members of sub message
+    false,  // is key
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(acare_msgs::msg::ValidatedIntent, action),  // bytes offset in struct
+    nullptr,  // default value
+    nullptr,  // size() function pointer
+    nullptr,  // get_const(index) function pointer
+    nullptr,  // get(index) function pointer
+    nullptr,  // fetch(index, &value) function pointer
+    nullptr,  // assign(index, value) function pointer
+    nullptr  // resize(index) function pointer
+  },
+  {
+    "user_id",  // name
+    ::rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING,  // type
+    0,  // upper bound of string
+    nullptr,  // members of sub message
+    false,  // is key
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(acare_msgs::msg::ValidatedIntent, user_id),  // bytes offset in struct
+    nullptr,  // default value
+    nullptr,  // size() function pointer
+    nullptr,  // get_const(index) function pointer
+    nullptr,  // get(index) function pointer
+    nullptr,  // fetch(index, &value) function pointer
+    nullptr,  // assign(index, value) function pointer
+    nullptr  // resize(index) function pointer
+  },
+  {
+    "name",  // name
+    ::rosidl_typesupport_introspection_cpp::ROS_TYPE_STRING,  // type
+    0,  // upper bound of string
+    nullptr,  // members of sub message
+    false,  // is key
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(acare_msgs::msg::ValidatedIntent, name),  // bytes offset in struct
+    nullptr,  // default value
+    nullptr,  // size() function pointer
+    nullptr,  // get_const(index) function pointer
+    nullptr,  // get(index) function pointer
+    nullptr,  // fetch(index, &value) function pointer
+    nullptr,  // assign(index, value) function pointer
+    nullptr  // resize(index) function pointer
+  },
+  {
+    "authenticated",  // name
+    ::rosidl_typesupport_introspection_cpp::ROS_TYPE_BOOLEAN,  // type
+    0,  // upper bound of string
+    nullptr,  // members of sub message
+    false,  // is key
+    false,  // is array
+    0,  // array size
+    false,  // is upper bound
+    offsetof(acare_msgs::msg::ValidatedIntent, authenticated),  // bytes offset in struct
+    nullptr,  // default value
+    nullptr,  // size() function pointer
+    nullptr,  // get_const(index) function pointer
+    nullptr,  // get(index) function pointer
+    nullptr,  // fetch(index, &value) function pointer
+    nullptr,  // assign(index, value) function pointer
+    nullptr  // resize(index) function pointer
+  }
+};
+
+static const ::rosidl_typesupport_introspection_cpp::MessageMembers ValidatedIntent_message_members = {
+  "acare_msgs::msg",  // message namespace
+  "ValidatedIntent",  // message name
+  5,  // number of fields
+  sizeof(acare_msgs::msg::ValidatedIntent),
+  false,  // has_any_key_member_
+  ValidatedIntent_message_member_array,  // message members
+  ValidatedIntent_init_function,  // function to initialize message memory (memory has to be allocated)
+  ValidatedIntent_fini_function  // function to terminate message instance (will not free memory)
+};
+
+static const rosidl_message_type_support_t ValidatedIntent_message_type_support_handle = {
+  ::rosidl_typesupport_introspection_cpp::typesupport_identifier,
+  &ValidatedIntent_message_members,
+  get_message_typesupport_handle_function,
+  &acare_msgs__msg__ValidatedIntent__get_type_hash,
+  &acare_msgs__msg__ValidatedIntent__get_type_description,
+  &acare_msgs__msg__ValidatedIntent__get_type_description_sources,
+};
+
+}  // namespace rosidl_typesupport_introspection_cpp
+
+}  // namespace msg
+
+}  // namespace acare_msgs
+
+
+namespace rosidl_typesupport_introspection_cpp
+{
+
+template<>
+ROSIDL_TYPESUPPORT_INTROSPECTION_CPP_PUBLIC
+const rosidl_message_type_support_t *
+get_message_type_support_handle<acare_msgs::msg::ValidatedIntent>()
+{
+  return &::acare_msgs::msg::rosidl_typesupport_introspection_cpp::ValidatedIntent_message_type_support_handle;
+}
+
+}  // namespace rosidl_typesupport_introspection_cpp
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+ROSIDL_TYPESUPPORT_INTROSPECTION_CPP_PUBLIC
+const rosidl_message_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_introspection_cpp, acare_msgs, msg, ValidatedIntent)() {
+  return &::acare_msgs::msg::rosidl_typesupport_introspection_cpp::ValidatedIntent_message_type_support_handle;
+}
+
+#ifdef __cplusplus
+}
+#endif

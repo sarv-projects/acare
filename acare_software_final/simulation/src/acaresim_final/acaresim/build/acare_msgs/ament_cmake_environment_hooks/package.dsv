@@ -1,0 +1,4 @@
+source;share/acare_msgs/local_setup.bash
+source;share/acare_msgs/local_setup.dsv
+source;share/acare_msgs/local_setup.sh
+source;share/acare_msgs/local_setup.zsh

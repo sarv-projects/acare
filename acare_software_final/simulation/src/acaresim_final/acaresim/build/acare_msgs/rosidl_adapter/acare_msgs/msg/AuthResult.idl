@@ -1,0 +1,24 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from acare_msgs/msg/AuthResult.msg
+// generated code does not contain a copyright notice
+
+
+module acare_msgs {
+  module msg {
+    struct AuthResult {
+      string user_id;
+
+      string name;
+
+      string role;
+
+      boolean success;
+
+      boolean face_verified;
+
+      float face_confidence;
+
+      float voice_confidence;
+    };
+  };
+};

@@ -1,0 +1,10 @@
+package.xml
+setup.py
+acare_bringup.egg-info/PKG-INFO
+acare_bringup.egg-info/SOURCES.txt
+acare_bringup.egg-info/dependency_links.txt
+acare_bringup.egg-info/entry_points.txt
+acare_bringup.egg-info/requires.txt
+acare_bringup.egg-info/top_level.txt
+acare_bringup.egg-info/zip-safe
+resource/acare_bringup

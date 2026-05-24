@@ -1,0 +1,12 @@
+// generated from rosidl_generator_c/resource/idl.h.em
+// with input from acare_msgs:msg/Intent.idl
+// generated code does not contain a copyright notice
+
+#ifndef ACARE_MSGS__MSG__INTENT_H_
+#define ACARE_MSGS__MSG__INTENT_H_
+
+#include "acare_msgs/msg/detail/intent__struct.h"
+#include "acare_msgs/msg/detail/intent__functions.h"
+#include "acare_msgs/msg/detail/intent__type_support.h"
+
+#endif  // ACARE_MSGS__MSG__INTENT_H_
