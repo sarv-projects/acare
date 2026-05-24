@@ -27,12 +27,12 @@ import yaml
 import sys
 import subprocess
 from pathlib import Path
+from acare_bringup.paths import LOG_DIR, SYSTEM_YAML, THRESHOLDS_YAML, USERS_DB
 
-DB_PATH       = Path('/home/acare/acare_ws/logs/acare_logs.db')
+DB_PATH       = LOG_DIR / 'acare_logs.db'
 KEY_PATH      = Path('/etc/acare/key.bin')
 API_KEYS_PATH = Path('/etc/acare/api_keys.yaml')
-THRESHOLDS    = Path('/home/acare/acare_ws/src/acare_bringup/config/thresholds.yaml')
-SYSTEM_YAML   = Path('/home/acare/acare_ws/src/acare_bringup/config/system.yaml')
+THRESHOLDS    = THRESHOLDS_YAML
 
 
 def get_fernet():
@@ -67,7 +67,7 @@ def cmd_enrol(args):
 
 def cmd_revoke(args):
     """Marks a staff member as inactive in users.db."""
-    users_db = Path('/home/acare/acare_ws/src/acare_bringup/config/users.db')
+    users_db = USERS_DB
     if not users_db.exists():
         print(f'users.db not found at {users_db}')
         return
@@ -84,7 +84,7 @@ def cmd_revoke(args):
 
 def cmd_list_staff(args):
     """Lists all enrolled staff from users.db."""
-    users_db = Path('/home/acare/acare_ws/src/acare_bringup/config/users.db')
+    users_db = USERS_DB
     if not users_db.exists():
         print('No users.db found — no staff enrolled yet.')
         return
@@ -160,7 +160,7 @@ def cmd_export_logs(args):
     if not DB_PATH.exists():
         print('No log database found.')
         return
-    out_path = Path(f'/home/acare/acare_ws/logs/export_{int(__import__("time").time())}.csv')
+    out_path = LOG_DIR / f'export_{int(__import__("time").time())}.csv'
     conn = sqlite3.connect(str(DB_PATH))
     rows = conn.execute('SELECT * FROM events ORDER BY timestamp').fetchall()
     cols = [d[0] for d in conn.execute('SELECT * FROM events LIMIT 0').description]

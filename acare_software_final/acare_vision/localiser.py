@@ -19,7 +19,7 @@ import numpy as np
 import yaml
 from pathlib import Path
 
-SYSTEM_YAML = Path('/acare_ws/src/acare_bringup/config/system.yaml')
+from acare_bringup.paths import SYSTEM_YAML
 
 # Placeholder intrinsics — typical values for a 640x480 camera at ~60° FOV
 # MUST be replaced with calibrated values before deployment

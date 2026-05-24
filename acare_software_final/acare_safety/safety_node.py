@@ -27,7 +27,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
-from pathlib import Path
+from acare_bringup.paths import THRESHOLDS_YAML
 
 try:
     from acare_msgs.msg import SafetyAlert, MotionFeedback
@@ -35,7 +35,7 @@ try:
 except ImportError:
     MSGS_OK = False
 
-THRESHOLDS_PATH = Path('/home/acare/acare_ws/src/acare_bringup/config/thresholds.yaml')
+THRESHOLDS_PATH = THRESHOLDS_YAML
 
 # Defaults — overridden by thresholds.yaml
 DEFAULTS = {

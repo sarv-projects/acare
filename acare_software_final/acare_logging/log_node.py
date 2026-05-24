@@ -15,7 +15,7 @@ import uuid
 import gzip
 import csv
 import time
-from pathlib import Path
+from acare_bringup.paths import LOG_DIR, ensure_parent
 
 try:
     from acare_msgs.msg import LogEvent
@@ -23,7 +23,7 @@ try:
 except ImportError:
     MSGS_OK = False
 
-DB_PATH     = Path('/home/acare/acare_ws/logs/acare_logs.db')
+DB_PATH     = LOG_DIR / 'acare_logs.db'
 MAX_SIZE_MB = 200
 BATCH_SIZE  = 10
 
@@ -50,7 +50,7 @@ class LogNode(Node):
     def __init__(self):
         super().__init__('log_node')
 
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ensure_parent(DB_PATH)
         self.conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         self.conn.execute(CREATE_SQL)
         self.conn.commit()

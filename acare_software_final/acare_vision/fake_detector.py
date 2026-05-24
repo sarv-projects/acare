@@ -13,14 +13,13 @@
 import cv2
 import numpy as np
 import yaml
-import os
-from pathlib import Path
+from acare_bringup.paths import THRESHOLDS_YAML
 
 # Default thresholds — overridden by thresholds.yaml if present
 DEFAULT_TEXTURE_THRESH = 120.0   # Laplacian variance
 DEFAULT_DEPTH_THRESH   = 0.002   # depth variance in metres^2
 
-THRESHOLDS_PATH = Path('/acare_ws/src/acare_bringup/config/thresholds.yaml')
+THRESHOLDS_PATH = THRESHOLDS_YAML
 
 
 class FakeDetector:

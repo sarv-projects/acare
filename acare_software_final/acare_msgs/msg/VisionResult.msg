@@ -5,3 +5,4 @@ float32 y
 float32 z
 float32 confidence
 string zone
+string[] candidates_json

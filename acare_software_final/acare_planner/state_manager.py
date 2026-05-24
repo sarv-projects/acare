@@ -18,7 +18,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 try:
-    from acare_msgs.msg import RobotState, StateTransition, SafetyAlert
+    from acare_msgs.msg import RobotState, StateTransition, SafetyAlert, AuthResult
     MSGS_OK = True
 except ImportError:
     MSGS_OK = False
@@ -55,6 +55,8 @@ class StateManager(Node):
                                      self._on_transition, 10)
             self.create_subscription(SafetyAlert, '/safety_alert',
                                      self._on_safety_alert, 10)
+            self.create_subscription(AuthResult, '/auth_result',
+                                     self._on_auth_result, 10)
         else:
             self.get_logger().error('acare_msgs not available — state_manager cannot run')
             return
@@ -81,6 +83,21 @@ class StateManager(Node):
             with self._lock:
                 self._transition('ESTOP', f'Safety: {msg.source} — {msg.reason}')
 
+    def _on_auth_result(self, msg: 'AuthResult'):
+        with self._lock:
+            if msg.success and msg.user_id:
+                self.active_user_id = msg.user_id
+                if self.state == 'LOGGED_OUT':
+                    self._transition('STANDBY', f'auth:{msg.user_id}')
+                else:
+                    self._publish_current_state()
+
+    def _publish_current_state(self):
+        msg = RobotState()
+        msg.state = self.state
+        msg.active_user_id = self.active_user_id
+        self.state_pub.publish(msg)
+
     def _transition(self, target: str, reason: str = ''):
         """
         Performs a state transition if valid.
@@ -96,10 +113,10 @@ class StateManager(Node):
         prev = self.state
         self.state = target
 
-        msg = RobotState()
-        msg.state = target
-        msg.active_user_id = self.active_user_id
-        self.state_pub.publish(msg)
+        if target == 'LOGGED_OUT':
+            self.active_user_id = ''
+
+        self._publish_current_state()
 
         self.get_logger().info(f'State: {prev} → {target}' +
                                (f' [{reason}]' if reason else ''))
