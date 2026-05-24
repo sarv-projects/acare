@@ -1,0 +1,138 @@
+package.xml
+setup.cfg
+setup.py
+config/display.rviz
+config/gz_ros2_control_params.yaml
+config/sensors.rviz
+config/urdf_assembly_6dof_controllers.yaml
+launch/display.launch.py
+launch/gazebo.launch.py
+launch/moveit_gazebo.launch.py
+meshes/20_1_cycloid_1.stl
+meshes/20_1_cycloid_2.stl
+meshes/6804ZZ Ball.stl
+meshes/6804ZZ Inner ring.stl
+meshes/6804ZZ Outer ring.stl
+meshes/6804ZZ Shield1.stl
+meshes/6804ZZ Shield2.stl
+meshes/6804zz v1.stl
+meshes/Component1.stl
+meshes/Component10.stl
+meshes/Component2.stl
+meshes/Component3.stl
+meshes/Component9.stl
+meshes/MG995 v1.stl
+meshes/MG995_v1_1 (2).stl
+meshes/MG995_v1_1.stl
+meshes/Spur Gear (30 teeth) v1.stl
+meshes/Spur_Gear__30_teeth__v1_1 (1).stl
+meshes/Spur_Gear__30_teeth__v1_1.stl
+meshes/base_box_1 v1.stl
+meshes/base_box_1_v1_1 (3).stl
+meshes/base_box_1_v1_1.stl
+meshes/base_box_3 v1.stl
+meshes/base_box_3_v1_1 (3).stl
+meshes/base_box_3_v1_1.stl
+meshes/base_box_4 v1.stl
+meshes/base_box_4_v1_1 (3).stl
+meshes/base_box_4_v1_1.stl
+meshes/base_link (3).stl
+meshes/base_link.stl
+meshes/bearing_50_63.5_6.35 v1.stl
+meshes/cam_1.stl
+meshes/cam_1_original v1.stl
+meshes/cam_2.stl
+meshes/cam_2_original v1.stl
+meshes/cycloid_drive_20_1_1.37 v16.stl
+meshes/cycloidal_drive_22_1_1.37 v2.stl
+meshes/disc_1.stl
+meshes/disc_2.stl
+meshes/eccentric_15_1_1 v1.stl
+meshes/eccentric_15_1_1_v1_1 (3).stl
+meshes/eccentric_15_1_1_v1_1.stl
+meshes/eccentric_15_1_2 v1.stl
+meshes/eccentric_15_1_2_v1_1 (3).stl
+meshes/eccentric_15_1_2_v1_1.stl
+meshes/eccentric_15_1_3 v1.stl
+meshes/eccentric_15_1_3_v1_1 (3).stl
+meshes/eccentric_15_1_3_v1_1.stl
+meshes/eccentric_15_1_4 v1.stl
+meshes/eccentric_15_1_4_v1_1 (3).stl
+meshes/eccentric_15_1_4_v1_1.stl
+meshes/elbow_link v1.stl
+meshes/elbow_link_v1_1 (2).stl
+meshes/elbow_link_v1_1.stl
+meshes/gripper_bottom_cover v1.stl
+meshes/gripper_bottom_cover_v1_1 (2).stl
+meshes/gripper_bottom_cover_v1_1.stl
+meshes/gripper_holder v1.stl
+meshes/gripper_holder_v1_1 (2).stl
+meshes/gripper_holder_v1_1.stl
+meshes/gripper_limb_1 v1.stl
+meshes/gripper_limb_1_finger v1.stl
+meshes/gripper_limb_1_finger_v1_2 (1).stl
+meshes/gripper_limb_1_finger_v1_2.stl
+meshes/gripper_limb_1_v1_1 (2).stl
+meshes/gripper_limb_1_v1_1.stl
+meshes/gripper_limb_1_v1_2 (2).stl
+meshes/gripper_limb_1_v1_2.stl
+meshes/gripper_limb_2_finger v1.stl
+meshes/gripper_limb_2_finger_v1_2 (1).stl
+meshes/gripper_limb_2_finger_v1_2.stl
+meshes/gripper_top_cover v1.stl
+meshes/gripper_top_cover_v1_1 (2).stl
+meshes/gripper_top_cover_v1_1.stl
+meshes/roller_base v2.stl
+meshes/roller_base.stl
+meshes/roller_cover.stl
+meshes/roller_cover_original v1.stl
+meshes/roller_enclousure.stl
+meshes/roller_top v1.stl
+meshes/sheet_base v1.stl
+meshes/sheet_base_2 v1.stl
+meshes/sheet_base_2_v1_1 (3).stl
+meshes/sheet_base_2_v1_1.stl
+meshes/sheet_base_v1_1 (3).stl
+meshes/sheet_base_v1_1.stl
+meshes/shoulder_elbow_holder v1.stl
+meshes/shoulder_elbow_holder_v1_1 (2).stl
+meshes/shoulder_elbow_holder_v1_1.stl
+meshes/shoulder_link v1.stl
+meshes/shoulder_link_v1_1 (2).stl
+meshes/shoulder_link_v1_1.stl
+meshes/tube_aluminium_400mm v1.stl
+meshes/tube_aluminium_400mm_v1_1 (2).stl
+meshes/tube_aluminium_400mm_v1_1.stl
+meshes/tube_aluminium_400mm_v1_2 (2).stl
+meshes/tube_aluminium_400mm_v1_2.stl
+meshes/tube_holder_shoulder_elbow v1.stl
+meshes/tube_holder_shoulder_elbow_v1_1 (2).stl
+meshes/tube_holder_shoulder_elbow_v1_1.stl
+meshes/tube_holder_shoulder_elbow_v1_2 (2).stl
+meshes/tube_holder_shoulder_elbow_v1_2.stl
+meshes/wrist_1_2_link v1.stl
+meshes/wrist_1_2_link_v1_1 (2).stl
+meshes/wrist_1_2_link_v1_1.stl
+meshes/wrist_1_link v1.stl
+meshes/wrist_1_link_v1_1 (2).stl
+meshes/wrist_1_link_v1_1.stl
+meshes/wrist_2_3_cover v1.stl
+meshes/wrist_2_3_cover_v1_1 (2).stl
+meshes/wrist_2_3_cover_v1_1.stl
+meshes/wrist_3_link v1.stl
+meshes/wrist_3_link_v1_1 (2).stl
+meshes/wrist_3_link_v1_1.stl
+resource/urdf_assembly_6dof_description
+urdf/materials.xacro
+urdf/urdf_assembly_6dof.gazebo.disabled
+urdf/urdf_assembly_6dof.trans.disabled
+urdf/urdf_assembly_6dof.xacro
+urdf/urdf_assembly_6dof_backup.xacro
+urdf_assembly_6dof_description/__init__.py
+urdf_assembly_6dof_description.egg-info/PKG-INFO
+urdf_assembly_6dof_description.egg-info/SOURCES.txt
+urdf_assembly_6dof_description.egg-info/dependency_links.txt
+urdf_assembly_6dof_description.egg-info/requires.txt
+urdf_assembly_6dof_description.egg-info/top_level.txt
+urdf_assembly_6dof_description.egg-info/zip-safe
+worlds/pick_and_place.sdf

@@ -1,0 +1,32 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from acare_msgs/msg/MotionFeedback.msg
+// generated code does not contain a copyright notice
+
+
+module acare_msgs {
+  module msg {
+    struct MotionFeedback {
+      boolean success;
+
+      string phase;
+
+      string error;
+
+      sequence<float> joint_positions;
+
+      sequence<float> joint_velocities;
+
+      sequence<float> joint_currents;
+
+      sequence<float> temperatures;
+
+      float gripper_force;
+
+      float imu_roll;
+
+      float imu_pitch;
+
+      float imu_yaw;
+    };
+  };
+};

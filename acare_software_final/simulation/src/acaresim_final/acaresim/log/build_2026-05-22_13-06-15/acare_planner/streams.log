@@ -1,0 +1,28 @@
+[2.148s] Invoking command in '/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner': AMENT_PREFIX_PATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs:${CMAKE_PREFIX_PATH} DEBUGINFOD_URLS=https://debuginfod.ubuntu.com LD_LIBRARY_PATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs/lib:${LD_LIBRARY_PATH} PYTHONPATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/lib/python3.12/site-packages:/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner/build --no-deps symlink_data
+[2.552s] running develop
+[2.734s] /usr/lib/python3/dist-packages/setuptools/command/easy_install.py:363: UserWarning: Unbuilt egg for pytest-repeat [unknown version] (/usr/lib/python3/dist-packages)
+[2.734s]   self.local_index = Environment(self.shadow_path + sys.path)
+[2.773s] running egg_info
+[2.774s] creating acare_planner.egg-info
+[2.795s] writing acare_planner.egg-info/PKG-INFO
+[2.795s] writing dependency_links to acare_planner.egg-info/dependency_links.txt
+[2.795s] writing entry points to acare_planner.egg-info/entry_points.txt
+[2.796s] writing requirements to acare_planner.egg-info/requires.txt
+[2.796s] writing top-level names to acare_planner.egg-info/top_level.txt
+[2.796s] writing manifest file 'acare_planner.egg-info/SOURCES.txt'
+[2.820s] reading manifest file 'acare_planner.egg-info/SOURCES.txt'
+[2.820s] writing manifest file 'acare_planner.egg-info/SOURCES.txt'
+[2.853s] running build_ext
+[2.877s] Creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/lib/python3.12/site-packages/acare-planner.egg-link (link to .)
+[2.877s] Installing embedded_interface script to /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/bin
+[2.877s] Installing planner_node script to /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/bin
+[2.878s] Installing state_manager script to /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/bin
+[2.878s] 
+[2.878s] Installed /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner
+[2.878s] running symlink_data
+[2.878s] creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/share/ament_index
+[2.878s] creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/share/ament_index/resource_index
+[2.878s] creating /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/share/ament_index/resource_index/packages
+[2.878s] symbolically linking /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner/resource/acare_planner -> /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/share/ament_index/resource_index/packages
+[2.878s] symbolically linking /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner/package.xml -> /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/share/acare_planner
+[2.924s] Invoked command in '/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner' returned '0': AMENT_PREFIX_PATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs:${AMENT_PREFIX_PATH} CMAKE_PREFIX_PATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs:${CMAKE_PREFIX_PATH} DEBUGINFOD_URLS=https://debuginfod.ubuntu.com LD_LIBRARY_PATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs/lib:${LD_LIBRARY_PATH} PYTHONPATH=/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_planner/lib/python3.12/site-packages:/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/install/acare_msgs/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_planner/build --no-deps symlink_data

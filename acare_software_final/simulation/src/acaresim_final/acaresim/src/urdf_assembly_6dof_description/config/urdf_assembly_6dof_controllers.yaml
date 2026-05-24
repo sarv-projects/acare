@@ -1,0 +1,49 @@
+arm_controller:
+  ros__parameters:
+    joints:
+      - base
+      - shoulder
+      - elbow
+      - wrist_1
+      - wrist_2
+      - wrist_3
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    open_loop_control: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+    gains:
+      base: {p: 100.0, d: 1.0, i: 0.0}
+      shoulder: {p: 200.0, d: 2.0, i: 0.0}
+      elbow: {p: 200.0, d: 2.0, i: 0.0}
+      wrist_1: {p: 50.0, d: 0.5, i: 0.0}
+      wrist_2: {p: 50.0, d: 0.5, i: 0.0}
+      wrist_3: {p: 50.0, d: 0.5, i: 0.0}
+
+gripper_controller:
+  ros__parameters:
+    joints:
+      - gripper_slider_left
+      - gripper_slider_right
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    open_loop_control: true
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+joint_state_broadcaster:
+  ros__parameters: {}

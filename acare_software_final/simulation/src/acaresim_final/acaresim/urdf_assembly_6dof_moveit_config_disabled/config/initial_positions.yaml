@@ -1,0 +1,10 @@
+# Default initial positions for urdf_assembly_6dof's ros2_control fake system
+
+initial_positions:
+  base: 0
+  elbow: 0
+  gripper_slider_right: 0
+  shoulder: 0
+  wrist_1: 0
+  wrist_2: 0
+  wrist_3: 0

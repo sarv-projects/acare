@@ -1,0 +1,10 @@
+package.xml
+setup.py
+acare_admin.egg-info/PKG-INFO
+acare_admin.egg-info/SOURCES.txt
+acare_admin.egg-info/dependency_links.txt
+acare_admin.egg-info/entry_points.txt
+acare_admin.egg-info/requires.txt
+acare_admin.egg-info/top_level.txt
+acare_admin.egg-info/zip-safe
+resource/acare_admin

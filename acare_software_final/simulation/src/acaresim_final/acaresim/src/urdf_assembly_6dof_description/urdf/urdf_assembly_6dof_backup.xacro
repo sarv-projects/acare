@@ -1,0 +1,690 @@
+<?xml version="1.0" ?>
+<robot name="urdf_assembly_6dof" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find urdf_assembly_6dof_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find urdf_assembly_6dof_description)/urdf/urdf_assembly_6dof.trans" />
+<xacro:include filename="$(find urdf_assembly_6dof_description)/urdf/urdf_assembly_6dof.gazebo" />
+<link name="base_link">
+  <inertial>
+    <origin xyz="0.00410640824843945 0.00037607678390353186 0.1170490117140184" rpy="0 0 0"/>
+    <mass value="0.23793774301536802"/>
+    <inertia ixx="0.000476" iyy="0.000555" izz="0.001027" ixy="1e-06" iyz="2e-06" ixz="3e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="eccentric_15_1_3_v1_1">
+  <inertial>
+    <origin xyz="-4.2789364312553757e-07 1.2124325275913539e-05 0.003439653375908" rpy="0 0 0"/>
+    <mass value="0.014600947373706387"/>
+    <inertia ixx="2e-06" iyy="2e-06" izz="5e-06" ixy="0.0" iyz="0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.001088 -0.000413 -0.118349" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/eccentric_15_1_3_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.001088 -0.000413 -0.118349" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/eccentric_15_1_3_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="shoulder_link_v1_1">
+  <inertial>
+    <origin xyz="-0.00489670517820693 0.0010482754384108885 0.29147921323786774" rpy="0 0 0"/>
+    <mass value="0.22101898904141454"/>
+    <inertia ixx="0.005778" iyy="0.005776" izz="0.000123" ixy="1e-06" iyz="-2.1e-05" ixz="0.000156"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.016699 -0.001018 -0.291755" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/shoulder_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.016699 -0.001018 -0.291755" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/shoulder_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="tube_holder_shoulder_elbow_v1_1">
+  <inertial>
+    <origin xyz="-0.06019707140695683 -0.0013764873428753779 -0.07265959536924965" rpy="0 0 0"/>
+    <mass value="0.07199185784738897"/>
+    <inertia ixx="6.5e-05" iyy="7.6e-05" izz="4.6e-05" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.047675 -0.002498 -0.393948" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_holder_shoulder_elbow_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.047675 -0.002498 -0.393948" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_holder_shoulder_elbow_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="eccentric_15_1_4_v1_1">
+  <inertial>
+    <origin xyz="-4.278936295988144e-07 4.780823860093771e-06 0.001400051031832189" rpy="0 0 0"/>
+    <mass value="0.024609049231594064"/>
+    <inertia ixx="1.5e-05" iyy="1.5e-05" izz="3.1e-05" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.001088 -0.000539 -0.154399" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/eccentric_15_1_4_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.001088 -0.000539 -0.154399" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/eccentric_15_1_4_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="shoulder_elbow_holder_v1_1">
+  <inertial>
+    <origin xyz="-0.0010189936781861563 0.0002803066830539462 0.08038184213394745" rpy="0 0 0"/>
+    <mass value="0.38096897658202344"/>
+    <inertia ixx="0.001988" iyy="0.002533" izz="0.001176" ixy="0.0" iyz="-5e-06" ixz="1.2e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.001088 -0.000549 -0.157199" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/shoulder_elbow_holder_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.001088 -0.000549 -0.157199" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/shoulder_elbow_holder_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="eccentric_15_1_2_v1_1">
+  <inertial>
+    <origin xyz="0.01247457452087002 0.01252054650383455 0.013059300425222409" rpy="0 0 0"/>
+    <mass value="0.32157417431877705"/>
+    <inertia ixx="0.000339" iyy="0.000339" izz="0.000638" ixy="0.0" iyz="1e-06" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.011387 0.012038 -0.125193" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/eccentric_15_1_2_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.011387 0.012038 -0.125193" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/eccentric_15_1_2_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="tube_holder_shoulder_elbow_v1_2">
+  <inertial>
+    <origin xyz="0.022110087471271973 -1.6666339447118234e-06 -0.00046608461371533405" rpy="0 0 0"/>
+    <mass value="0.07199185784738897"/>
+    <inertia ixx="6.5e-05" iyy="7.6e-05" izz="4.6e-05" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.008384 -0.002574 -0.726729" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_holder_shoulder_elbow_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.008384 -0.002574 -0.726729" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_holder_shoulder_elbow_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="elbow_link_v1_1">
+  <inertial>
+    <origin xyz="0.004896721242532168 0.000987305481864716 0.29147993619371726" rpy="0 0 0"/>
+    <mass value="0.22101898904141454"/>
+    <inertia ixx="0.005778" iyy="0.005776" izz="0.000123" ixy="-1e-06" iyz="-1.9e-05" ixz="-0.000156"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.034671 -0.002469 -0.696729" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/elbow_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.034671 -0.002469 -0.696729" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/elbow_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="tube_aluminium_400mm_v1_1">
+  <inertial>
+    <origin xyz="2.4504038268272077e-07 0.0006963804524399953 0.1993768272375735" rpy="0 0 0"/>
+    <mass value="0.07102015612812057"/>
+    <inertia ixx="0.000945" iyy="0.000945" izz="8e-06" ixy="-0.0" iyz="-3e-06" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.016699 -0.001018 -0.291755" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_aluminium_400mm_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.016699 -0.001018 -0.291755" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_aluminium_400mm_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="tube_aluminium_400mm_v1_2">
+  <inertial>
+    <origin xyz="-2.2897606320737562e-07 0.0006962011616549772 0.1993773379931063" rpy="0 0 0"/>
+    <mass value="0.07102015612812057"/>
+    <inertia ixx="0.000945" iyy="0.000945" izz="8e-06" ixy="-0.0" iyz="-3e-06" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.034671 -0.002469 -0.696729" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_aluminium_400mm_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.034671 -0.002469 -0.696729" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/tube_aluminium_400mm_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wrist_1_link_v1_1">
+  <inertial>
+    <origin xyz="-0.018771885723878775 -7.522553827623776e-07 -0.00033245509979451526" rpy="0 0 0"/>
+    <mass value="0.06364898919669625"/>
+    <inertia ixx="6.3e-05" iyy="7.1e-05" izz="3.9e-05" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.009588 -0.00395 -1.131704" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/wrist_1_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.009588 -0.00395 -1.131704" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/wrist_1_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wrist_1_2_link_v1_1">
+  <inertial>
+    <origin xyz="2.4504039673745037e-07 0.0003191007655391526 0.09149928507437477" rpy="0 0 0"/>
+    <mass value="0.03259747953291305"/>
+    <inertia ixx="9.3e-05" iyy="9.3e-05" izz="4e-06" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.019699 -0.003839 -1.099704" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/wrist_1_2_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.019699 -0.003839 -1.099704" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/wrist_1_2_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wrist_3_link_v1_1">
+  <inertial>
+    <origin xyz="-0.016271971624069098 -0.00754054035212065 -0.8405620037838266" rpy="0 0 0"/>
+    <mass value="0.10575794368204493"/>
+    <inertia ixx="0.000109" iyy="0.000102" izz="8.8e-05" ixy="-0.0" iyz="0.0" ixz="4e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.013768 -0.011977 -2.148328" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/wrist_3_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.013768 -0.011977 -2.148328" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/wrist_3_link_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_holder_v1_1">
+  <inertial>
+    <origin xyz="0.014590589866179327 -8.677483399201907e-05 -0.0006528781386849758" rpy="0 0 0"/>
+    <mass value="0.04465962382833497"/>
+    <inertia ixx="2.1e-05" iyy="1.2e-05" izz="1.6e-05" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.005301 -0.004413 -1.31109" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_holder_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.005301 -0.004413 -1.31109" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_holder_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_top_cover_v1_1">
+  <inertial>
+    <origin xyz="-1.2682955372696034 -0.061138806424086076 -0.20704437052142066" rpy="0 0 0"/>
+    <mass value="0.04450458413708717"/>
+    <inertia ixx="5.1e-05" iyy="1.9e-05" izz="3.4e-05" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-1.324151 -0.067185 -1.508801" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_top_cover_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-1.324151 -0.067185 -1.508801" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_top_cover_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="MG995_v1_1">
+  <inertial>
+    <origin xyz="-0.07879853066375689 -0.0044915852854894136 -0.06839214626074952" rpy="0 0 0"/>
+    <mass value="0.2556467218698517"/>
+    <inertia ixx="4.4e-05" iyy="7e-05" izz="4.3e-05" ixy="0.0" iyz="-1e-06" ixz="1e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.104639 -0.0089 -1.379268" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/MG995_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.104639 -0.0089 -1.379268" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/MG995_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_bottom_cover_v1_1">
+  <inertial>
+    <origin xyz="0.02957864849474268 -1.3434361363736302 0.00037992960479549254" rpy="0 0 0"/>
+    <mass value="0.013417914609515144"/>
+    <inertia ixx="1.4e-05" iyy="5e-06" izz="8e-06" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.015066 -1.349464 -1.30022" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_bottom_cover_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.015066 -1.349464 -1.30022" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_bottom_cover_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_top_cover_v1_1">
+  <inertial>
+    <origin xyz="-1.2989775372696033 -0.06026880642408608 -0.16551237052142054" rpy="0 0 0"/>
+    <mass value="0.04450458413708717"/>
+    <inertia ixx="5.1e-05" iyy="1.9e-05" izz="3.4e-05" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-1.354833 -0.066315 -1.467269" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_top_cover_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-1.354833 -0.066315 -1.467269" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_top_cover_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="Spur_Gear__30_teeth__v1_1">
+  <inertial>
+    <origin xyz="0.039796245040828813 -1.311596511156584 -0.010335567868355655" rpy="0 0 0"/>
+    <mass value="0.02625489538583632"/>
+    <inertia ixx="3e-06" iyy="2e-06" izz="2e-06" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.009505 -1.3158 -1.311428" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/Spur_Gear__30_teeth__v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.009505 -1.3158 -1.311428" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/Spur_Gear__30_teeth__v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_limb_1_v1_2">
+  <inertial>
+    <origin xyz="1.3305878109250537 0.04843143930124431 0.07777463740099866" rpy="0 0 0"/>
+    <mass value="0.009623378174321458"/>
+    <inertia ixx="4e-06" iyy="1e-06" izz="3e-06" ixy="0.0" iyz="-1e-06" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="1.264695 0.058524 -1.233567" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_1_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="1.264695 0.058524 -1.233567" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_1_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_limb_1_v1_1">
+  <inertial>
+    <origin xyz="1.288875810925053 0.0806866232501945 -0.01980287496589339" rpy="0 0 0"/>
+    <mass value="0.009623378174321458"/>
+    <inertia ixx="4e-06" iyy="1e-06" izz="3e-06" ixy="-0.0" iyz="-1e-06" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="1.222983 0.058524 -1.311868" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_1_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="1.222983 0.058524 -1.311868" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_1_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_limb_2_finger_v1_2">
+  <inertial>
+    <origin xyz="0.03601810749734448 0.006469330701746632 0.0027340469565539927" rpy="0 0 0"/>
+    <mass value="0.008395262805604693"/>
+    <inertia ixx="1e-06" iyy="6e-06" izz="7e-06" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.069842 -0.020671 -1.298368" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_2_finger_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.069842 -0.020671 -1.298368" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_2_finger_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_limb_1_finger_v1_2">
+  <inertial>
+    <origin xyz="0.03601804778232537 -0.0064693251221964575 -0.002733286629410303" rpy="0 0 0"/>
+    <mass value="0.008395211706113329"/>
+    <inertia ixx="1e-06" iyy="6e-06" izz="7e-06" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.069842 0.008601 -1.305038" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_1_finger_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.069842 0.008601 -1.305038" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/gripper_limb_1_finger_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="old_component_1">
+  <inertial>
+    <origin xyz="-0.0024997549596157765 8.466956414639355e-05 0.02434811134489845" rpy="0 0 0"/>
+    <mass value="0.0227013463706052"/>
+    <inertia ixx="3.8e-05" iyy="2e-05" izz="1.8e-05" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.005301 -0.004413 -1.31109" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/old_component_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.005301 -0.004413 -1.31109" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="file://$(find urdf_assembly_6dof_description)/meshes/old_component_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="base" type="continuous">
+  <origin xyz="0.001088 0.000413 0.118349" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="eccentric_15_1_3_v1_1"/>
+  <axis xyz="-0.0 -0.003491 -0.999994"/>
+</joint>
+
+<joint name="Rigid 13" type="fixed">
+  <origin xyz="-0.064374 -0.00148 -0.102193" rpy="0 0 0"/>
+  <parent link="tube_holder_shoulder_elbow_v1_1"/>
+  <child link="shoulder_link_v1_1"/>
+</joint>
+
+<joint name="shoulder" type="revolute">
+  <origin xyz="0.046587 0.001949 0.236749" rpy="0 0 0"/>
+  <parent link="shoulder_elbow_holder_v1_1"/>
+  <child link="tube_holder_shoulder_elbow_v1_1"/>
+  <axis xyz="-1.0 0.0 0.0"/>
+  <limit upper="2.268928" lower="-2.268928" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid 22" type="fixed">
+  <origin xyz="0.012475 0.012577 0.029206" rpy="0 0 0"/>
+  <parent link="eccentric_15_1_2_v1_1"/>
+  <child link="eccentric_15_1_4_v1_1"/>
+</joint>
+
+<joint name="Rigid 23" type="fixed">
+  <origin xyz="0.0 1e-05 0.0028" rpy="0 0 0"/>
+  <parent link="eccentric_15_1_4_v1_1"/>
+  <child link="shoulder_elbow_holder_v1_1"/>
+</joint>
+
+<joint name="Rigid 24" type="fixed">
+  <origin xyz="-0.012475 -0.012451 0.006844" rpy="0 0 0"/>
+  <parent link="eccentric_15_1_3_v1_1"/>
+  <child link="eccentric_15_1_2_v1_1"/>
+</joint>
+
+<joint name="elbow" type="revolute">
+  <origin xyz="0.025083 0.001556 0.434974" rpy="0 0 0"/>
+  <parent link="shoulder_link_v1_1"/>
+  <child link="tube_holder_shoulder_elbow_v1_2"/>
+  <axis xyz="1.0 -0.0 -0.0"/>
+  <limit upper="2.792527" lower="-2.792527" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid 26" type="fixed">
+  <origin xyz="0.026287 -0.000105 -0.03" rpy="0 0 0"/>
+  <parent link="tube_holder_shoulder_elbow_v1_2"/>
+  <child link="elbow_link_v1_1"/>
+</joint>
+
+<joint name="Rigid 27" type="fixed">
+  <origin xyz="-0.064374 -0.00148 -0.102193" rpy="0 0 0"/>
+  <parent link="tube_holder_shoulder_elbow_v1_1"/>
+  <child link="tube_aluminium_400mm_v1_1"/>
+</joint>
+
+<joint name="Rigid 28" type="fixed">
+  <origin xyz="0.026287 -0.000105 -0.03" rpy="0 0 0"/>
+  <parent link="tube_holder_shoulder_elbow_v1_2"/>
+  <child link="tube_aluminium_400mm_v1_2"/>
+</joint>
+
+<joint name="wrist_1" type="revolute">
+  <origin xyz="-0.025083 0.001481 0.434975" rpy="0 0 0"/>
+  <parent link="elbow_link_v1_1"/>
+  <child link="wrist_1_link_v1_1"/>
+  <axis xyz="-1.0 0.0 0.0"/>
+  <limit upper="2.617994" lower="-2.617994" effort="100" velocity="100"/>
+</joint>
+
+<joint name="wrist_2" type="continuous">
+  <origin xyz="-0.029287 -0.000111 -0.032" rpy="0 0 0"/>
+  <parent link="wrist_1_link_v1_1"/>
+  <child link="wrist_1_2_link_v1_1"/>
+  <axis xyz="0.0 0.003491 0.999994"/>
+</joint>
+
+<joint name="Rigid 32" type="fixed">
+  <origin xyz="0.005931 0.008138 1.048624" rpy="0 0 0"/>
+  <parent link="wrist_1_2_link_v1_1"/>
+  <child link="wrist_3_link_v1_1"/>
+</joint>
+
+<joint name="wrist_3" type="continuous">
+  <origin xyz="0.019069 -0.007564 -0.837238" rpy="0 0 0"/>
+  <parent link="wrist_3_link_v1_1"/>
+  <child link="gripper_holder_v1_1"/>
+  <axis xyz="-1.0 0.0 -0.0"/>
+</joint>
+
+<joint name="Rigid 34" type="fixed">
+  <origin xyz="1.339767 -1.283149 0.167049" rpy="0 0 0"/>
+  <parent link="gripper_bottom_cover_v1_1"/>
+  <child link="gripper_top_cover_v1_1"/>
+</joint>
+
+<joint name="Rigid 35" type="fixed">
+  <origin xyz="0.099338 0.004487 0.068178" rpy="0 0 0"/>
+  <parent link="gripper_holder_v1_1"/>
+  <child link="MG995_v1_1"/>
+</joint>
+
+<joint name="Rigid 36" type="fixed">
+  <origin xyz="-0.089573 1.340564 -0.079048" rpy="0 0 0"/>
+  <parent link="MG995_v1_1"/>
+  <child link="gripper_bottom_cover_v1_1"/>
+</joint>
+
+<joint name="Rigid 37" type="fixed">
+  <origin xyz="1.339767 -1.283149 0.167049" rpy="0 0 0"/>
+  <parent link="gripper_bottom_cover_v1_1"/>
+  <child link="gripper_top_cover_v1_1"/>
+</joint>
+
+<joint name="gripper" type="continuous">
+  <origin xyz="-0.095134 1.3069 -0.06784" rpy="0 0 0"/>
+  <parent link="MG995_v1_1"/>
+  <child link="Spur_Gear__30_teeth__v1_1"/>
+  <axis xyz="1.0 -0.0 -0.0"/>
+</joint>
+
+<joint name="Slider 39" type="prismatic">
+  <origin xyz="-2.619528 -0.124839 -0.233702" rpy="0 0 0"/>
+  <parent link="gripper_top_cover_v1_1"/>
+  <child link="gripper_limb_1_v1_2"/>
+  <axis xyz="-0.0 -1.0 0.0"/>
+  <limit upper="0.04" lower="0.0" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Slider 40" type="prismatic">
+  <origin xyz="-2.577816 -0.124839 -0.155401" rpy="0 0 0"/>
+  <parent link="gripper_top_cover_v1_1"/>
+  <child link="gripper_limb_1_v1_1"/>
+  <axis xyz="-0.0 -1.0 0.0"/>
+  <limit upper="0.0" lower="-0.04" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid 41" type="fixed">
+  <origin xyz="1.292825 0.079195 -0.0135" rpy="0 0 0"/>
+  <parent link="gripper_limb_1_v1_1"/>
+  <child link="gripper_limb_2_finger_v1_2"/>
+</joint>
+
+<joint name="Rigid 42" type="fixed">
+  <origin xyz="1.334537 0.049923 0.071471" rpy="0 0 0"/>
+  <parent link="gripper_limb_1_v1_2"/>
+  <child link="gripper_limb_1_finger_v1_2"/>
+</joint>
+
+<joint name="Rigid 45" type="fixed">
+  <origin xyz="0.019069 -0.007564 -0.837238" rpy="0 0 0"/>
+  <parent link="wrist_3_link_v1_1"/>
+  <child link="old_component_1"/>
+</joint>
+
+</robot>

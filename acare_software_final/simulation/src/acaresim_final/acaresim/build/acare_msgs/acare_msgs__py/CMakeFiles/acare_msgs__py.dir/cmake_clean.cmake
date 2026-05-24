@@ -1,0 +1,43 @@
+file(REMOVE_RECURSE
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/_acare_msgs_s.ep.rosidl_typesupport_c.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/_acare_msgs_s.ep.rosidl_typesupport_fastrtps_c.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/_acare_msgs_s.ep.rosidl_typesupport_introspection_c.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/__init__.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_arm_command.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_arm_command_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_auth_result.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_auth_result_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_emergency_signal.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_emergency_signal_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_gripper_command.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_gripper_command_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_hand_status.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_hand_status_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_intent.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_intent_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_log_event.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_log_event_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_motion_feedback.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_motion_feedback_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_robot_state.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_robot_state_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_safety_alert.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_safety_alert_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_state_transition.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_state_transition_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_validated_intent.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_validated_intent_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_vision_result.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_vision_result_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_vision_search_request.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/msg/_vision_search_request_s.c"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/srv/__init__.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/srv/_enrol_staff.py"
+  "/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_py/acare_msgs/srv/_enrol_staff_s.c"
+  "CMakeFiles/acare_msgs__py"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang )
+  include(CMakeFiles/acare_msgs__py.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()
