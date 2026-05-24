@@ -28,11 +28,13 @@ import yaml
 import time
 import numpy as np
 from pathlib import Path
+import json
 
 from .fake_detector import FakeDetector
 from .localiser import Localiser
+from acare_bringup.paths import PROBABILITY_MAP_YAML, SYSTEM_YAML
 
-PROB_MAP_PATH = Path('/acare_ws/src/acare_bringup/config/probability_map.yaml')
+PROB_MAP_PATH = PROBABILITY_MAP_YAML
 
 WORKSPACE = {
     'xmin': -0.4, 'xmax': 0.4,
@@ -42,19 +44,12 @@ WORKSPACE = {
 
 # All tool classes the model can detect
 ALL_TOOLS = [
-    'cream', 'medical scissors', 'oxymeter',
-    'plaster', 'surgical forceps', 'thermometer',
+    'scalpel', 'scissors', 'forceps', 'bandage',
+    'gauze', 'thermometer', 'oximeter', 'plaster',
 ]
 
 # Map from model class name to canonical system name
-CANONICAL = {
-    'cream':            'cream',
-    'medical scissors': 'scissors',
-    'oxymeter':         'oximeter',
-    'plaster':          'plaster',
-    'surgical forceps': 'forceps',
-    'thermometer':      'thermometer',
-}
+CANONICAL = {tool: tool for tool in ALL_TOOLS}
 
 # Reverse map: canonical → model class name (for lookup by tool name from intent)
 REVERSE_CANONICAL = {v: k for k, v in CANONICAL.items()}
@@ -130,7 +125,7 @@ class NBVSearch:
         Returns empty list until calibration is done.
         Each viewpoint: {'zone': str, 'joint_angles': [float x6]}
         """
-        system_yaml = Path('/acare_ws/src/acare_bringup/config/system.yaml')
+        system_yaml = SYSTEM_YAML
         if not system_yaml.exists():
             return []
         try:
@@ -169,10 +164,10 @@ class NBVSearch:
 
         Returns dict:
             {'found': bool, 'tool': str, 'x': float, 'y': float, 'z': float,
-             'confidence': float, 'zone': str}
+             'confidence': float, 'zone': str, 'candidates': list}
         """
         result = {'found': False, 'tool': tool_name, 'x': 0.0, 'y': 0.0, 'z': 0.0,
-                  'confidence': 0.0, 'zone': ''}
+                  'confidence': 0.0, 'zone': '', 'candidates': []}
 
         # Map canonical name to model class name
         model_class = REVERSE_CANONICAL.get(tool_name, tool_name)
@@ -241,6 +236,16 @@ class NBVSearch:
                 result['x'], result['y'], result['z'] = best['position_3d']
                 result['confidence'] = best['confidence']
                 result['zone']       = zone
+                result['candidates'] = [
+                    json.dumps({
+                        'x': float(d['position_3d'][0]),
+                        'y': float(d['position_3d'][1]),
+                        'z': float(d['position_3d'][2]),
+                        'confidence': float(d['confidence']),
+                        'zone': zone,
+                    })
+                    for d in valid[1:]
+                ]
                 return result
 
         return result

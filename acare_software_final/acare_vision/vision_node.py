@@ -32,16 +32,17 @@
 
 import threading
 import time
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from std_msgs.msg import String
+from acare_bringup.paths import MODEL_DIR
 
 try:
     from acare_msgs.msg import (
         VisionSearchRequest, VisionResult,
-        HandStatus, RobotState, LogEvent
+        HandStatus, RobotState, LogEvent, MotionFeedback, VisionStatus
     )
     ACARE_MSGS_AVAILABLE = True
 except ImportError:
@@ -56,7 +57,7 @@ from .localiser import Localiser
 from .hand_tracker import HandTracker
 from .hp60c_camera_node import HP60CCameraNode
 
-MODEL_PATH = '/home/acare/models/yolo_acare.onnx'
+MODEL_PATH = str(MODEL_DIR / 'yolo_acare.onnx')
 CONF_THRESH = 0.70
 
 
@@ -83,7 +84,7 @@ class VisionNode(Node):
         self._motion_success = False
 
         # --- Publishers ---
-        self.status_pub = self.create_publisher(String, '/vision_status', 10)
+        self.status_pub = self.create_publisher(VisionStatus, '/vision_status', 10)
         if ACARE_MSGS_AVAILABLE:
             self.result_pub = self.create_publisher(VisionResult, '/vision_result', 10)
             self.hand_pub   = self.create_publisher(HandStatus,   '/hand_status',   10)
@@ -100,9 +101,12 @@ class VisionNode(Node):
             self.create_subscription(
                 RobotState, '/robot_state',
                 self._on_robot_state, 10)
+            self.create_subscription(
+                MotionFeedback, '/motion_feedback',
+                self._on_motion_feedback, 10)
 
         # Publish LOADING immediately so planner knows we're starting
-        self.status_pub.publish(String(data='LOADING'))
+        self._publish_status('LOADING')
         self.get_logger().info('Vision node: loading YOLO model...')
 
         # Load model in background thread — keeps ROS2 spinning
@@ -133,7 +137,7 @@ class VisionNode(Node):
                 logger=self.get_logger(),
             )
             self._yolo_ready = True
-            self.status_pub.publish(String(data='READY'))
+            self._publish_status('READY')
             self.get_logger().info('Vision node: READY')
 
             if not self.localiser.is_calibrated():
@@ -143,7 +147,12 @@ class VisionNode(Node):
 
         except Exception as e:
             self.get_logger().error(f'Vision node failed to load: {e}')
-            self.status_pub.publish(String(data='ERROR'))
+            self._publish_status('ERROR')
+
+    def _publish_status(self, status: str):
+        msg = VisionStatus()
+        msg.status = status
+        self.status_pub.publish(msg)
 
     def _init_camera_subscriptions(self):
         """
@@ -249,7 +258,7 @@ class VisionNode(Node):
             self.get_logger().error(f'NBV search error: {e}')
             result_dict = {'found': False, 'tool': tool_name,
                            'x': 0.0, 'y': 0.0, 'z': 0.0,
-                           'confidence': 0.0, 'zone': ''}
+                           'confidence': 0.0, 'zone': '', 'candidates': []}
 
         search_ms = int((time.monotonic() - start_time) * 1000)
         self.get_logger().info(
@@ -267,6 +276,7 @@ class VisionNode(Node):
             msg.z          = float(result_dict['z'])
             msg.confidence = float(result_dict['confidence'])
             msg.zone       = result_dict['zone']
+            msg.candidates_json = list(result_dict.get('candidates', []))
             self.result_pub.publish(msg)
 
         with self._mode_lock:

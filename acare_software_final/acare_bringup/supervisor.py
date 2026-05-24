@@ -22,7 +22,7 @@ import subprocess
 import time
 import sys
 
-AUTO_RESTART = {'log_node', 'admin_node', 'dialogue_node'}
+AUTO_RESTART = {'log_node', 'admin_node', 'dialogue_node', 'voice_node', 'auth_node'}
 CRITICAL     = {'safety_node', 'embedded_interface_node', 'state_manager', 'planner_node'}
 
 # ROS2 node names as they appear in `ros2 node list`
@@ -30,6 +30,8 @@ NODE_ROS_NAMES = {
     'log_node':                '/log_node',
     'admin_node':              '/admin_node',
     'dialogue_node':           '/dialogue_node',
+    'voice_node':              '/voice_node',
+    'auth_node':               '/auth_node',
     'safety_node':             '/safety_node',
     'embedded_interface_node': '/embedded_interface_node',
     'state_manager':           '/state_manager',
@@ -42,6 +44,8 @@ NODE_CMDS = {
     'log_node':                ['ros2', 'run', 'acare_logging',           'log_node'],
     'admin_node':              ['ros2', 'run', 'acare_admin',             'admin_node'],
     'dialogue_node':           ['ros2', 'run', 'acare_dialogue',          'dialogue_node'],
+    'voice_node':              ['ros2', 'run', 'acare_voice',             'voice_node'],
+    'auth_node':               ['ros2', 'run', 'acare_auth',              'auth_node'],
     'safety_node':             ['ros2', 'run', 'acare_safety',            'safety_node'],
     'embedded_interface_node': ['ros2', 'run', 'acare_embedded_interface','interface_node'],
     'state_manager':           ['ros2', 'run', 'acare_planner',           'state_manager'],
