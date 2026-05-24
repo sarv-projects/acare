@@ -15,14 +15,8 @@
 #   - Saved atomically on clean shutdown
 #   - Cold start (no yaml): uniform distribution across all zones
 #
-# Model classes (6 total, matching trained ONNX model):
-#   cream, medical scissors, oxymeter, plaster, surgical forceps, thermometer
-#
-# Canonical name mapping (model class → system tool name):
-#   medical scissors → scissors
-#   oxymeter         → oximeter
-#   surgical forceps → forceps
-#   (others unchanged)
+# Model classes (8 total, matching the current top-level taxonomy):
+#   scalpel, scissors, forceps, bandage, gauze, thermometer, oximeter, plaster
 
 import yaml
 import time
@@ -88,6 +82,9 @@ class NBVSearch:
         self.localiser    = Localiser()
         self.probability_map = self._load_map()
         self.viewpoints   = self._load_viewpoints()
+        self.wrist_offsets = self._load_wrist_offsets()
+        self.capture_settle_s = self._load_capture_settle_s()
+        self.joint_limits_min, self.joint_limits_max = self._load_joint_limits()
         # Tracks detections from previous viewpoint for temporal consistency
         self.prev_detections = {}   # class_name → (cx, cy) pixel centre
 
@@ -134,6 +131,57 @@ class NBVSearch:
             return cfg.get('vision', {}).get('viewpoints', [])
         except Exception:
             return []
+
+    def _load_wrist_offsets(self) -> list[list[float]]:
+        default_offsets = [
+            [0.0, 0.0],
+            [0.035, 0.0],
+            [-0.035, 0.025],
+        ]
+        system_yaml = SYSTEM_YAML
+        if not system_yaml.exists():
+            return default_offsets
+        try:
+            with open(system_yaml) as f:
+                cfg = yaml.safe_load(f) or {}
+            offsets = cfg.get('vision', {}).get('nbv_wrist_micro_offsets_rad', default_offsets)
+            normalised = []
+            for pair in offsets:
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    continue
+                normalised.append([float(pair[0]), float(pair[1])])
+            return normalised or default_offsets
+        except Exception:
+            return default_offsets
+
+    def _load_capture_settle_s(self) -> float:
+        system_yaml = SYSTEM_YAML
+        if not system_yaml.exists():
+            return 0.12
+        try:
+            with open(system_yaml) as f:
+                cfg = yaml.safe_load(f) or {}
+            settle_ms = float(cfg.get('vision', {}).get('capture_settle_ms', 120))
+            return max(0.05, settle_ms / 1000.0)
+        except Exception:
+            return 0.12
+
+    def _load_joint_limits(self) -> tuple[list[float] | None, list[float] | None]:
+        system_yaml = SYSTEM_YAML
+        if not system_yaml.exists():
+            return None, None
+        try:
+            with open(system_yaml) as f:
+                cfg = yaml.safe_load(f) or {}
+            mins = [float(v) for v in cfg.get('arm', {}).get('joint_limits_min', [])]
+            maxs = [float(v) for v in cfg.get('arm', {}).get('joint_limits_max', [])]
+            if len(mins) != 6 or len(maxs) != 6:
+                return None, None
+            if all(abs(v) < 1e-9 for v in mins + maxs):
+                return None, None
+            return mins, maxs
+        except Exception:
+            return None, None
 
     def save_map(self):
         """
@@ -189,7 +237,7 @@ class NBVSearch:
                 continue
 
             # Capture 3 frames at small wrist offsets
-            frame_pairs = self._capture_frames(camera)
+            frame_pairs = self._capture_frames(camera, vp['joint_angles'])
             rgb_frames   = [p[0] for p in frame_pairs]
             depth_frames = [p[1] for p in frame_pairs]
 
@@ -224,13 +272,19 @@ class NBVSearch:
                 if not self._in_workspace(pos):
                     continue
                 d['position_3d'] = pos
+                d['depth_support'] = self._depth_support_score(ref_depth, d['bbox'])
+                d['rank_score'] = (
+                    float(d['confidence'])
+                    + 0.10 * float(d['depth_support'])
+                    + (0.02 if d.get('variant') == 'enhanced' and d.get('scene_low_light') else 0.0)
+                )
                 valid.append(d)
 
             # Bayesian map update
             self._update_map(zone, model_class, found=len(valid) > 0, all_dets=all_dets)
 
             if valid:
-                valid.sort(key=lambda d: d['confidence'], reverse=True)
+                valid.sort(key=lambda d: d.get('rank_score', d['confidence']), reverse=True)
                 best = valid[0]
                 result['found']      = True
                 result['x'], result['y'], result['z'] = best['position_3d']
@@ -276,20 +330,79 @@ class NBVSearch:
         time.sleep(0.1)
         return True
 
-    def _capture_frames(self, camera) -> list:
+    def _apply_wrist_offset(self, joint_angles: list, offset_pair: list[float]) -> list:
+        adjusted = [float(v) for v in joint_angles]
+        if len(adjusted) < 6:
+            return adjusted
+        adjusted[4] += float(offset_pair[0])
+        adjusted[5] += float(offset_pair[1])
+        if self.joint_limits_min is not None and self.joint_limits_max is not None:
+            adjusted[4] = float(np.clip(adjusted[4], self.joint_limits_min[4], self.joint_limits_max[4]))
+            adjusted[5] = float(np.clip(adjusted[5], self.joint_limits_min[5], self.joint_limits_max[5]))
+        return adjusted
+
+    def _capture_frame_pair(self, camera):
+        for _ in range(4):
+            rgb, depth = camera.capture()
+            if rgb is not None and depth is not None:
+                return rgb, depth
+            time.sleep(0.05)
+        return None, None
+
+    def _depth_support_score(self, depth_frame, bbox: tuple) -> float:
+        if depth_frame is None:
+            return 0.0
+        x1, y1, x2, y2 = bbox
+        h, w = depth_frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        roi = depth_frame[y1:y2, x1:x2]
+        if roi.size == 0:
+            return 0.0
+        valid = roi[(roi >= 200) & (roi <= 4000)]
+        return float(valid.size / roi.size)
+
+    def _capture_frames(self, camera, base_joint_angles: list) -> list:
         """
-        Captures 3 RGB+depth frame pairs.
-        In full deployment, applies small wrist offsets between captures.
-        Currently captures 3 frames from the same position (wrist offset
-        requires arm command interface — [FILL_AFTER_ASSEMBLY]).
+        Captures 3 RGB+depth frame pairs around a viewpoint.
+        The first sample uses the base viewpoint, then two small wrist offsets
+        are applied to reduce self-occlusion and low-texture misses. If an
+        offset move fails, capture falls back to the current pose and search
+        continues. The base viewpoint is restored before returning.
         Returns list of (rgb, depth) tuples.
         """
         frames = []
-        for _ in range(3):
-            rgb, depth = camera.capture()
-            if rgb is not None and depth is not None:
-                frames.append((rgb, depth))
-            time.sleep(0.05)
+        poses = [[float(v) for v in base_joint_angles]]
+        for offset_pair in self.wrist_offsets[1:3]:
+            poses.append(self._apply_wrist_offset(base_joint_angles, offset_pair))
+
+        restore_required = False
+        try:
+            for idx, pose in enumerate(poses):
+                if idx > 0:
+                    moved = self._move_arm_to(pose)
+                    if moved:
+                        restore_required = True
+                        time.sleep(self.capture_settle_s)
+                    elif self.node:
+                        self.node.get_logger().warn(
+                            f'NBV wrist offset move failed at sample {idx + 1}; '
+                            'capturing from current pose instead.'
+                        )
+                else:
+                    time.sleep(min(0.05, self.capture_settle_s))
+
+                rgb, depth = self._capture_frame_pair(camera)
+                if rgb is not None and depth is not None:
+                    frames.append((rgb, depth))
+        finally:
+            if restore_required:
+                restored = self._move_arm_to(base_joint_angles)
+                if not restored and self.node:
+                    self.node.get_logger().warn('Failed to restore base NBV viewpoint after wrist-offset capture.')
+
         # Pad with copies if fewer than 3 frames captured
         while len(frames) < 3 and frames:
             frames.append(frames[-1])

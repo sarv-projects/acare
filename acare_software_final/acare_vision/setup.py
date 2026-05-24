@@ -21,6 +21,7 @@ setup(
     license="TODO",
     entry_points={
         "console_scripts": [
+            "camera_probe = acare_vision.camera_probe:main",
             "vision_node = acare_vision.vision_node:main",
         ],
     },

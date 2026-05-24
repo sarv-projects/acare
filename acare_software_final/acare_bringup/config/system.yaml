@@ -36,6 +36,9 @@ camera:
   fy: 554.0
   cx: 320.0
   cy: 240.0
+  # Optional exact ascamera parameter overrides.
+  # Leave empty until `vision_node` logs the exact parameter names exported by /ascamera_hp60c.
+  control_overrides: {}
   # Extrinsics — 4x4 transform camera→robot base, flat 16-element list
   # Fill after arm assembly and camera mounting (admin.py calibrate Step 5)
   T_robot_camera: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
@@ -43,7 +46,21 @@ camera:
 vision:
   model_path: 'models/yolo_acare.onnx'
   confidence_threshold: 0.70
+  low_light_confidence_threshold: 0.56
+  low_light_v_mean_threshold: 75.0
+  very_low_light_v_mean_threshold: 52.0
+  low_light_enable_tta: true
+  low_light_gamma_dark: 1.55
+  low_light_gamma_very_dark: 1.85
+  low_light_enable_unsharp_mask: true
   input_size: 320
+  capture_settle_ms: 120
+  # Small wrist micro-offsets around each search viewpoint, in radians.
+  # Used to capture 3 frames with slightly different camera angles.
+  nbv_wrist_micro_offsets_rad:
+    - [0.0, 0.0]
+    - [0.035, 0.0]
+    - [-0.035, 0.025]
   # Viewpoints defined after arm calibration (admin.py calibrate Step 5)
   # Each entry: {zone: str, joint_angles: [float x6]}
   viewpoints: []

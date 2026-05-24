@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
@@ -35,31 +38,63 @@ class PendingIntent:
     confidence: float
 
 
+@dataclass
+class PendingEnrollment:
+    name: str
+    role: str
+    created_at: float
+    deadline_at: float
+    face_embeddings: list[np.ndarray] = field(default_factory=list)
+    voice_embeddings: list[np.ndarray] = field(default_factory=list)
+    last_face_capture_at: float = 0.0
+    last_voice_capture_at: float = 0.0
+    cancelled: bool = False
+    failure_reason: str = ""
+
+
 class AuthNode(Node):
     LOGIN_PROMPT_COOLDOWN_S = 5.0
+    ENROL_TIMEOUT_S = 25.0
+    ENROL_FACE_SAMPLE_PERIOD_S = 0.15
+    ENROL_VOICE_SAMPLE_PERIOD_S = 0.60
+    ENROL_START_AUDIO_GUARD_S = 2.0
+    ENROL_MIN_AUDIO_SAMPLES = 12_000
+    ALLOWED_ROLES = {"surgeon", "nurse", "admin"}
 
     def __init__(self):
         super().__init__("auth_node")
+        self._io_group = ReentrantCallbackGroup()
         self.validated_pub = self.create_publisher(ValidatedIntent, "/validated_intent", 10)
         self.auth_pub = self.create_publisher(AuthResult, "/auth_result", 10)
         self.tts_pub = self.create_publisher(String, "/tts_request", 10)
         self.transition_pub = self.create_publisher(StateTransition, "/state_transition", 10)
-        self.create_subscription(Intent, "/intent_result", self._on_intent, 10)
-        self.create_subscription(AuthRequest, "/auth_request", self._on_auth_request, 10)
-        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, 10)
-        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, 10)
-        self.create_subscription(Image, "/ascamera_hp60c/camera_publisher/rgb0/image", self._on_rgb, 10)
-        self.create_service(EnrolStaff, "/enrol_staff", self._on_enrol)
+        self.create_subscription(Intent, "/intent_result", self._on_intent, 10, callback_group=self._io_group)
+        self.create_subscription(AuthRequest, "/auth_request", self._on_auth_request, 10, callback_group=self._io_group)
+        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, 10, callback_group=self._io_group)
+        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, 10, callback_group=self._io_group)
+        self.create_subscription(
+            Image,
+            "/ascamera_hp60c/camera_publisher/rgb0/image",
+            self._on_rgb,
+            10,
+            callback_group=self._io_group,
+        )
+        self.create_service(EnrolStaff, "/enrol_staff", self._on_enrol, callback_group=self._io_group)
 
         self.store = UserStore()
         self.face_detector = PassiveFaceDetector()
         self.face_verifier = FaceVerifier()
         self.voice_verifier = VoiceVerifier()
 
+        system_cfg = self._load_system_config()
+        auth_cfg = system_cfg.get("auth", {}) if isinstance(system_cfg, dict) else {}
         self._robot_state = "LOGGED_OUT"
-        self._demo_mode = self._load_demo_mode()
+        self._demo_mode = bool(system_cfg.get("demo_mode", False)) if isinstance(system_cfg, dict) else False
+        self._enrol_voice_samples = max(1, int(auth_cfg.get("enrol_voice_samples", 3)))
+        self._enrol_face_frames = max(1, int(auth_cfg.get("enrol_face_frames", 10)))
         self._pending_login: PendingLogin | None = None
         self._pending_intent: PendingIntent | None = None
+        self._pending_enrolment: PendingEnrollment | None = None
         self._active_user_id = ""
         self._active_user_name = ""
         self._active_user_role = ""
@@ -73,6 +108,12 @@ class AuthNode(Node):
         self._last_voice_check_ok = True
         self._last_voice_check_confidence = 0.0
         self._last_voice_check_at = 0.0
+        self._enrol_condition = threading.Condition()
+
+        if hasattr(self.voice_verifier, "THRESHOLD"):
+            self.voice_verifier.THRESHOLD = float(auth_cfg.get("voice_similarity_threshold", self.voice_verifier.THRESHOLD))
+        if hasattr(self.face_verifier, "THRESHOLD"):
+            self.face_verifier.THRESHOLD = float(auth_cfg.get("face_similarity_threshold", self.face_verifier.THRESHOLD))
 
         self.create_timer(0.5, self._passive_face_scan)
         self.create_timer(0.5, self._handover_face_check)
@@ -80,16 +121,21 @@ class AuthNode(Node):
             f"Auth node ready demo_mode={self._demo_mode} "
             f"face_backend={self.face_verifier.available} voice_backend={self.voice_verifier.available}"
         )
+        if not self._demo_mode and not self.face_detector.available:
+            self.get_logger().error("Passive face detector unavailable. Install MediaPipe for always-on login scan.")
+        if not self._demo_mode and not self.face_verifier.available:
+            self.get_logger().error("Face verification backend unavailable. Install insightface and camera dependencies.")
+        if not self._demo_mode and not self.voice_verifier.available:
+            self.get_logger().error("Voice verification backend unavailable. Install SpeechBrain and torch runtime dependencies.")
 
-    def _load_demo_mode(self) -> bool:
+    def _load_system_config(self) -> dict:
         try:
             import yaml
 
             with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
-                cfg = yaml.safe_load(handle) or {}
-            return bool(cfg.get("demo_mode", False))
+                return yaml.safe_load(handle) or {}
         except Exception:
-            return False
+            return {}
 
     def _publish_tts(self, text: str):
         self.tts_pub.publish(String(data=text))
@@ -152,6 +198,16 @@ class AuthNode(Node):
         if publish_transition:
             self._transition_state("LOGGED_OUT", "auth_logout")
 
+    def _normalise_embedding_mean(self, embeddings: list[np.ndarray]) -> np.ndarray | None:
+        if not embeddings:
+            return None
+        stacked = np.vstack([np.asarray(emb, dtype=np.float32) for emb in embeddings])
+        mean = stacked.mean(axis=0).astype(np.float32)
+        norm = float(np.linalg.norm(mean))
+        if not np.isfinite(norm) or norm < 1e-6:
+            return None
+        return mean / norm
+
     def _find_best_face_match(self):
         users = self.store.all_active()
         if not users:
@@ -175,7 +231,7 @@ class AuthNode(Node):
         return best_user, best_sim
 
     def _passive_face_scan(self):
-        if self._robot_state != "LOGGED_OUT" or self._pending_login is not None:
+        if self._robot_state != "LOGGED_OUT" or self._pending_login is not None or self._pending_enrolment is not None:
             return
         if self._active_user_id:
             return
@@ -239,6 +295,37 @@ class AuthNode(Node):
         except Exception:
             return None
 
+    def _sample_enrolment_voice(self, msg: Transcript, text: str):
+        pending = self._pending_enrolment
+        if pending is None or not self.voice_verifier.available or not msg.is_final or not text:
+            return
+        now = time.monotonic()
+        with self._enrol_condition:
+            pending = self._pending_enrolment
+            if pending is None or pending.cancelled or pending.failure_reason:
+                return
+            if len(pending.voice_embeddings) >= self._enrol_voice_samples:
+                return
+            if (now - pending.last_voice_capture_at) < self.ENROL_VOICE_SAMPLE_PERIOD_S:
+                return
+            pending.last_voice_capture_at = now
+
+        audio_tensor = self._transcript_to_audio_tensor(msg)
+        if audio_tensor is None or int(audio_tensor.numel()) < self.ENROL_MIN_AUDIO_SAMPLES:
+            return
+        voice_emb = self.voice_verifier.embed(audio_tensor)
+        if voice_emb is None:
+            return
+
+        with self._enrol_condition:
+            pending = self._pending_enrolment
+            if pending is None or pending.cancelled or pending.failure_reason:
+                return
+            if len(pending.voice_embeddings) >= self._enrol_voice_samples:
+                return
+            pending.voice_embeddings.append(np.asarray(voice_emb, dtype=np.float32))
+            self._enrol_condition.notify_all()
+
     def _bootstrap_voice_embedding(self, user_id: str, msg: Transcript) -> bool:
         user = self.store.get(user_id)
         if user is None or not self.voice_verifier.available:
@@ -282,6 +369,34 @@ class AuthNode(Node):
             self._last_face_seen_at = time.monotonic()
         except Exception:
             self._latest_rgb = None
+            return
+
+        if not self.face_verifier.available:
+            return
+
+        now = time.monotonic()
+        with self._enrol_condition:
+            pending = self._pending_enrolment
+            if pending is None or pending.cancelled or pending.failure_reason:
+                return
+            if len(pending.face_embeddings) >= self._enrol_face_frames:
+                return
+            if (now - pending.last_face_capture_at) < self.ENROL_FACE_SAMPLE_PERIOD_S:
+                return
+            pending.last_face_capture_at = now
+
+        face_emb = self.face_verifier.embed(arr)
+        if face_emb is None:
+            return
+
+        with self._enrol_condition:
+            pending = self._pending_enrolment
+            if pending is None or pending.cancelled or pending.failure_reason:
+                return
+            if len(pending.face_embeddings) >= self._enrol_face_frames:
+                return
+            pending.face_embeddings.append(np.asarray(face_emb, dtype=np.float32))
+            self._enrol_condition.notify_all()
 
     def _on_robot_state(self, msg: RobotState):
         self._robot_state = msg.state
@@ -293,16 +408,136 @@ class AuthNode(Node):
                 self._activate_session(user.user_id, user.name, user.role)
 
     def _on_enrol(self, request: EnrolStaff.Request, response: EnrolStaff.Response):
-        face_emb = None
-        if self.face_verifier.available and self._latest_rgb is not None:
-            face_emb = self.face_verifier.embed(self._latest_rgb)
-        record = self.store.enrol(request.name, request.role, voice_emb=None, face_emb=face_emb)
-        response.success = True
-        response.staff_id = record.user_id
-        response.message = "Enrolment stored. Voice embedding capture awaits audio-sample integration."
-        return response
+        name = (request.name or "").strip()
+        role = (request.role or "").strip().lower()
+        if not name:
+            response.success = False
+            response.staff_id = ""
+            response.message = "Name is required."
+            return response
+        if role not in self.ALLOWED_ROLES:
+            response.success = False
+            response.staff_id = ""
+            response.message = f"Role must be one of: {', '.join(sorted(self.ALLOWED_ROLES))}."
+            return response
+        if self._robot_state not in {"LOGGED_OUT", "STANDBY"}:
+            response.success = False
+            response.staff_id = ""
+            response.message = f"Cannot enrol while robot state is {self._robot_state}."
+            return response
+        if not self._demo_mode and not self.face_verifier.available:
+            response.success = False
+            response.staff_id = ""
+            response.message = "Face verification backend unavailable. Install insightface before enrolment."
+            return response
+        if not self._demo_mode and not self.voice_verifier.available:
+            response.success = False
+            response.staff_id = ""
+            response.message = "Voice verification backend unavailable. Install SpeechBrain before enrolment."
+            return response
+        face_target = self._enrol_face_frames if self.face_verifier.available else 0
+        voice_target = self._enrol_voice_samples if self.voice_verifier.available else 0
+
+        pending = PendingEnrollment(
+            name=name,
+            role=role,
+            created_at=time.monotonic(),
+            deadline_at=time.monotonic() + self.ENROL_TIMEOUT_S,
+            last_voice_capture_at=time.monotonic() + self.ENROL_START_AUDIO_GUARD_S,
+        )
+        with self._enrol_condition:
+            if self._pending_enrolment is not None:
+                response.success = False
+                response.staff_id = ""
+                response.message = "Another enrolment is already in progress."
+                return response
+            self._pending_enrolment = pending
+
+        if face_target and voice_target:
+            prompt = f"Starting enrolment for {name}. Please face the camera and say {voice_target} short phrases clearly."
+        elif face_target:
+            prompt = f"Starting enrolment for {name}. Please face the camera for biometric capture."
+        elif voice_target:
+            prompt = f"Starting enrolment for {name}. Please say {voice_target} short phrases clearly."
+        else:
+            prompt = f"Starting enrolment for {name} in demo mode."
+        self._publish_tts(prompt)
+        self.get_logger().info(
+            f"Enrolment started for {name} role={role} "
+            f"voice_target={voice_target} face_target={face_target}"
+        )
+
+        try:
+            while True:
+                with self._enrol_condition:
+                    current = self._pending_enrolment
+                    if current is None:
+                        break
+                    if current.cancelled:
+                        response.success = False
+                        response.staff_id = ""
+                        response.message = current.failure_reason or "Enrolment cancelled."
+                        return response
+                    if current.failure_reason:
+                        response.success = False
+                        response.staff_id = ""
+                        response.message = current.failure_reason
+                        return response
+                    face_done = len(current.face_embeddings) >= face_target
+                    voice_done = len(current.voice_embeddings) >= voice_target
+                    if face_done and voice_done:
+                        break
+                    remaining = current.deadline_at - time.monotonic()
+                    if remaining <= 0.0:
+                        break
+                    self._enrol_condition.wait(timeout=min(0.5, remaining))
+
+            with self._enrol_condition:
+                current = self._pending_enrolment
+                self._pending_enrolment = None
+
+            face_count = len(pending.face_embeddings)
+            voice_count = len(pending.voice_embeddings)
+            if face_count < face_target or voice_count < voice_target:
+                missing = []
+                if face_count < face_target:
+                    missing.append(f"face frames {face_count}/{face_target}")
+                if voice_count < voice_target:
+                    missing.append(f"voice samples {voice_count}/{voice_target}")
+                response.success = False
+                response.staff_id = ""
+                response.message = "Enrolment timed out before capturing required biometrics: " + ", ".join(missing)
+                self.get_logger().warn(response.message)
+                return response
+
+            face_emb = self._normalise_embedding_mean(pending.face_embeddings) if face_target else None
+            voice_emb = self._normalise_embedding_mean(pending.voice_embeddings) if voice_target else None
+            if (face_target and face_emb is None) or (voice_target and voice_emb is None):
+                response.success = False
+                response.staff_id = ""
+                response.message = "Enrolment failed because biometric embeddings could not be aggregated."
+                return response
+
+            record = self.store.enrol(name, role, voice_emb=voice_emb, face_emb=face_emb)
+            response.success = True
+            response.staff_id = record.user_id
+            response.message = (
+                f"Enrolment stored for {name} with "
+                f"{voice_count} voice samples and {face_count} face frames."
+            )
+            if self._demo_mode and (voice_target == 0 or face_target == 0):
+                response.message += " Demo mode stored a degraded biometric profile."
+            self.get_logger().info(f"Enrolment completed for {record.user_id}")
+            return response
+        finally:
+            with self._enrol_condition:
+                if self._pending_enrolment is pending:
+                    self._pending_enrolment = None
 
     def _on_intent(self, msg: Intent):
+        if self._pending_enrolment is not None:
+            self.get_logger().warn("Ignoring intent while enrolment is in progress.")
+            return
         action = (msg.action or "").lower()
         if action == "logout":
             self._logout()
@@ -333,6 +568,15 @@ class AuthNode(Node):
 
     def _on_transcript(self, msg: Transcript):
         text = (msg.text or "").strip().lower()
+        if self._pending_enrolment is not None:
+            if text in {"cancel", "abort", "stop enrolment", "stop enrollment"}:
+                with self._enrol_condition:
+                    if self._pending_enrolment is not None:
+                        self._pending_enrolment.cancelled = True
+                        self._pending_enrolment.failure_reason = "Enrolment cancelled by operator voice command."
+                        self._enrol_condition.notify_all()
+                return
+            self._sample_enrolment_voice(msg, text)
         if not text:
             return
 
@@ -395,8 +639,10 @@ class AuthNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = AuthNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
