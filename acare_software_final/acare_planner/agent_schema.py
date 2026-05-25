@@ -86,6 +86,40 @@ class ArmMoveCommand(BaseModel):
         return self
 
 
+class SafeLimitSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    velocity_hard_deg_s: float = Field(gt=0.0)
+    velocity_soft_deg_s: float = Field(gt=0.0)
+    current_hard_a: float = Field(gt=0.0)
+    current_soft_a: float = Field(gt=0.0)
+    temperature_hard_c: float = Field(gt=0.0)
+    temperature_soft_c: float = Field(gt=0.0)
+    gripper_force_hard_n: float = Field(gt=0.0)
+    gripper_force_soft_n: float = Field(gt=0.0)
+    max_command_velocity_scale: float = Field(gt=0.05, le=1.0)
+    max_command_accel_limit: float = Field(gt=0.01, le=1.0)
+    kiosk_velocity_scale: float = Field(gt=0.05, le=1.0)
+    kiosk_accel_limit: float = Field(gt=0.01, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_prethresholds(self):
+        pairs = [
+            ("velocity_soft_deg_s", self.velocity_soft_deg_s, "velocity_hard_deg_s", self.velocity_hard_deg_s),
+            ("current_soft_a", self.current_soft_a, "current_hard_a", self.current_hard_a),
+            ("temperature_soft_c", self.temperature_soft_c, "temperature_hard_c", self.temperature_hard_c),
+            ("gripper_force_soft_n", self.gripper_force_soft_n, "gripper_force_hard_n", self.gripper_force_hard_n),
+        ]
+        for soft_name, soft_value, hard_name, hard_value in pairs:
+            if soft_value >= hard_value:
+                raise ValueError(f"{soft_name} must stay below {hard_name}")
+        if self.kiosk_velocity_scale > self.max_command_velocity_scale:
+            raise ValueError("kiosk_velocity_scale must stay below max_command_velocity_scale")
+        if self.kiosk_accel_limit > self.max_command_accel_limit:
+            raise ValueError("kiosk_accel_limit must stay below max_command_accel_limit")
+        return self
+
+
 class GripperMode(str, Enum):
     GRASP = "GRASP"
     RELEASE = "RELEASE"

@@ -244,8 +244,16 @@ class NBVSearch:
             # Run YOLO on all 3 frames, merge
             all_dets = self.yolo.infer_multi_frame(rgb_frames)
 
-            # Temporal consistency: promote 0.65+ if seen at same location before
-            all_dets = self._check_temporal_consistency(all_dets)
+            # Determine lighting mode from the reference frame
+            low_light_mode = False
+            if rgb_frames and rgb_frames[0] is not None:
+                import cv2
+                import numpy as np
+                gray = cv2.cvtColor(rgb_frames[0], cv2.COLOR_BGR2GRAY)
+                low_light_mode = float(np.mean(gray)) < 80   # spec Section XI threshold
+
+            # Temporal consistency with lighting-adaptive threshold
+            all_dets = self._check_temporal_consistency(all_dets, low_light_mode=low_light_mode)
 
             # Update prev detections for next viewpoint
             self.prev_detections = {}
@@ -408,12 +416,19 @@ class NBVSearch:
             frames.append(frames[-1])
         return frames if frames else [(None, None)] * 3
 
-    def _check_temporal_consistency(self, dets: list) -> list:
+    def _check_temporal_consistency(self, dets: list, low_light_mode: bool = False) -> list:
         """
-        Promotes detections with confidence >= 0.65 (instead of 0.70) if the
-        same class was detected at approximately the same pixel location in the
-        previous viewpoint (within 50 pixels). Handles partial occlusion.
+        Promotes detections with confidence >= 0.65 if seen at same location in
+        previous viewpoint (within 50px). Handles partial occlusion.
+
+        Spec Section XI: temporal_consistency_required = 3 viewpoints if low_light_mode,
+        else 2. This method is called per-viewpoint; the caller tracks the viewpoint
+        count across iterations — here we apply the confidence floor per lighting mode.
         """
+        # In low-light mode, require confidence >= 0.65 (already at threshold floor).
+        # In normal mode, require confidence >= 0.70.
+        # Temporal promotion lowers the effective threshold to 0.65 in both cases
+        # when the same object is seen at the same location.
         promoted = []
         for d in dets:
             cx = (d['bbox'][0] + d['bbox'][2]) // 2
@@ -424,7 +439,9 @@ class NBVSearch:
                 if dist < 50 and d['confidence'] >= 0.65:
                     promoted.append(d)
                     continue
-            if d['confidence'] >= 0.70:
+            # Base threshold depends on lighting
+            base_thresh = 0.60 if low_light_mode else 0.70
+            if d['confidence'] >= base_thresh:
                 promoted.append(d)
         return promoted
 

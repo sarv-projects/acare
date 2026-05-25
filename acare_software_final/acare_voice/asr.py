@@ -23,6 +23,9 @@ DEEPGRAM_API_KEY: str = _require_env_str("DEEPGRAM_API_KEY")
 SAMPLE_RATE = 16000
 
 class ASRClient:
+    MAX_RECONNECT_ATTEMPTS = 3
+    RECONNECT_BACKOFFS = [0.5, 1.0, 2.0]   # seconds — spec Section IX
+
     def __init__(self, on_transcript, keyword_monitor=None):
         self.on_transcript = on_transcript
         self.keyword_monitor = keyword_monitor
@@ -35,13 +38,19 @@ class ASRClient:
         self._last_final_text = ""
         self._last_final_at = 0.0
         self._connection_died = False
+        self._reconnect_attempts = 0
+        self._reconnecting = False
         self._last_send_error_time = 0.0
+        self._on_network_failure_cb = None   # injected by voice_node for TTS alert
+
+    def set_network_failure_callback(self, cb):
+        """Called after all reconnect attempts fail. cb() → triggers TTS + ESTOP."""
+        self._on_network_failure_cb = cb
 
     def connect(self):
         t = threading.Thread(target=self._run_loop, daemon=True)
         t.start()
         self._ready.wait()
-        # Start keepalive after connection confirmed open
         self.start_keepalive()
 
     def _run_loop(self):
@@ -64,18 +73,90 @@ class ASRClient:
             encoding="linear16",
             punctuate=True,
             interim_results=True,
-            endpointing=15000,  # 15s endpointing timeout (safe headroom for TTS pause/resume)
-            vad_events=False,  # Disable server-side VAD (we use Silero client-side)
+            endpointing=15000,
+            vad_events=False,
         )
 
         started = connection.start(options)
         if inspect.isawaitable(started):
             await started
+
+        self._connection_died = False
+        self._reconnect_attempts = 0
+        self._reconnecting = False
         self._ready.set()
         print("[ASR] Deepgram Streaming Active. Speak now.")
 
         while True:
             await asyncio.sleep(0.1)
+
+    def _reconnect_in_background(self):
+        """
+        Spec Section IX: 3 retries with exponential backoff (500ms, 1s, 2s).
+        Runs in a daemon thread so it doesn't block the ASR loop.
+        Calls _on_network_failure_cb if all retries exhausted.
+        """
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+
+        def _do_reconnect():
+            for attempt_idx, delay in enumerate(self.RECONNECT_BACKOFFS):
+                attempt_num = attempt_idx + 1
+                print(f"[ASR] Reconnect attempt {attempt_num}/{self.MAX_RECONNECT_ATTEMPTS} "
+                      f"in {delay}s...")
+                time.sleep(delay)
+                try:
+                    # Stop old keepalive
+                    self.keepalive_active = False
+
+                    # Create fresh connection
+                    connection = cast(Any, self.client.listen.asynclive.v("1"))
+                    self.connection = connection
+                    connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
+                    connection.on(LiveTranscriptionEvents.Error, self._on_error)
+
+                    live_options_ctor = cast(Any, LiveOptions)
+                    options = live_options_ctor(
+                        model="nova-2",
+                        language="en-IN",
+                        sample_rate=SAMPLE_RATE,
+                        channels=1,
+                        encoding="linear16",
+                        punctuate=True,
+                        interim_results=True,
+                        endpointing=15000,
+                        vad_events=False,
+                    )
+                    if self.loop and self.loop.is_running():
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._start_connection(connection, options), self.loop
+                        )
+                        future.result(timeout=10.0)
+                    self._connection_died = False
+                    self._reconnecting = False
+                    self._reconnect_attempts = 0
+                    print(f"[ASR] Reconnected successfully on attempt {attempt_num}.")
+                    self.start_keepalive()
+                    return
+                except Exception as e:
+                    print(f"[ASR] Reconnect attempt {attempt_num} failed: {e}")
+
+            # All retries exhausted
+            self._reconnecting = False
+            print("[ASR] All reconnect attempts failed — voice service unavailable.")
+            if self._on_network_failure_cb:
+                try:
+                    self._on_network_failure_cb()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_do_reconnect, daemon=True).start()
+
+    async def _start_connection(self, connection, options):
+        started = connection.start(options)
+        if inspect.isawaitable(started):
+            await started
 
     def _send_to_deepgram_safe(self, data):
         """Send data to Deepgram and suppress SDK error output."""
@@ -95,21 +176,24 @@ class ASRClient:
         """
         Sends silent audio to Deepgram every 1.0 seconds.
         Prevents timeout when audio streaming is paused (e.g., during TTS).
+        On consecutive send failures, triggers reconnect logic.
         """
         def keepalive_loop():
-            # Create silent audio: 512 samples at 16kHz = 32ms of silence
             silence = np.zeros(512, dtype=np.int16).tobytes()
+            consecutive_failures = 0
             while self.keepalive_active:
                 if not self._send_to_deepgram_safe(silence):
-                    if not self._connection_died:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3 and not self._connection_died and not self._reconnecting:
                         self._connection_died = True
-                        print(f"[ASR] Deepgram connection unavailable (will retry on next activity)")
-                time.sleep(1.0)  # Send every 1.0 seconds (well within 15s timeout)
+                        print("[ASR] Deepgram keepalive failed — triggering reconnect.")
+                        self._reconnect_in_background()
+                else:
+                    consecutive_failures = 0
+                time.sleep(1.0)
 
         self.keepalive_active = True
-        self.keepalive_thread = threading.Thread(
-            target=keepalive_loop, daemon=True
-        )
+        self.keepalive_thread = threading.Thread(target=keepalive_loop, daemon=True)
         self.keepalive_thread.start()
 
     def stop_keepalive(self):
@@ -148,13 +232,16 @@ class ASRClient:
         self.on_transcript(sentence)
 
     async def _on_error(self, self2, error, **kwargs):
-        # Log only once if connection closed; suppress flood
         if isinstance(error, dict) and "ConnectionClosed" in str(error.get("description", "")):
             if not self._connection_died:
                 self._connection_died = True
-                print(f"[ASR] Deepgram connection closed (timeout or network issue)")
+                print("[ASR] Deepgram connection closed — attempting reconnect...")
+                self._reconnect_in_background()
         else:
             print(f"[ASR] Deepgram error: {error}")
+            if not self._connection_died:
+                self._connection_died = True
+                self._reconnect_in_background()
 
     def send_chunk(self, audio_np):
         audio_int16 = (audio_np * 32767).astype(np.int16)

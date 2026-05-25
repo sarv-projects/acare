@@ -9,6 +9,7 @@ robot:
   safe_drop_zone:  {x: 0.0, y: 0.35, z: 0.05}   # [FILL_AFTER_ASSEMBLY]
   handover_zone:   {x: 0.0, y: 0.40, z: 0.10}   # [FILL_AFTER_ASSEMBLY]
   handover_height_adjustment_m: 0.05
+  kiosk_return_to_rest_seconds: 12
 
 arm:
   # Gearbox ratios confirmed: Joint 2 (Shoulder) = 22:1, Joint 3 (Elbow) = 15:1
@@ -23,12 +24,24 @@ arm:
   joint_limits_min: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # [FILL_AFTER_ASSEMBLY]
   joint_limits_max: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # [FILL_AFTER_ASSEMBLY]
   neutral_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # [FILL_AFTER_ASSEMBLY]
+  # Exhibition / kiosk poses. These are deterministic, pre-approved arm poses.
+  kiosk_rest_joint_angles: [0.0, 0.15, -0.35, 0.0, 0.10, 0.0]
+  kiosk_interaction_joint_angles: [0.0, -0.10, -0.05, 0.0, -0.05, 0.0]
   link_lengths:
     base_height: 0.0   # [FILL_AFTER_ASSEMBLY]
     upper_arm:   0.0   # [FILL_AFTER_ASSEMBLY]
     forearm:     0.0   # [FILL_AFTER_ASSEMBLY]
     wrist:       0.0   # [FILL_AFTER_ASSEMBLY]
     gripper:     0.0   # [FILL_AFTER_ASSEMBLY]
+  control_soft_limits:
+    velocity_soft_ratio: 0.90
+    current_soft_margin_a: 0.50
+    temperature_soft_margin_c: 5.0
+    gripper_force_soft_ratio: 0.90
+    max_command_velocity_scale: 0.85
+    max_command_accel_limit: 0.25
+    kiosk_velocity_scale: 0.22
+    kiosk_accel_limit: 0.10
 
 camera:
   # Intrinsics — fill after calibration (admin.py calibrate Step 2)

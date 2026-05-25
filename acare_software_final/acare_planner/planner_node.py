@@ -33,9 +33,14 @@ from .agent_schema import (
     ArmMoveCommand,
     GripperCommandSchema,
     SafeDepositCommand,
+    SafeLimitSchema,
     SpeechCommand,
     TransitionCommand,
     VisionSearchCommand,
+)
+from acare_bringup.qos_profiles import (
+    TOPIC_COMMAND, TOPIC_SENSOR, TOPIC_STATE, TOPIC_VISION,
+    TOPIC_VOICE_PIPELINE, TOPIC_LOGGING, TOPIC_TTS,
 )
 
 MAX_RETRIES = 3
@@ -76,22 +81,24 @@ class PlannerNode(Node):
         self.context = TaskContext()
         self.ik = IKSolver()
 
-        self.search_pub = self.create_publisher(VisionSearchRequest, "/vision_search_request", 10)
-        self.transition_pub = self.create_publisher(StateTransition, "/state_transition", 10)
-        self.arm_pub = self.create_publisher(ArmCommand, "/arm_command", 10)
-        self.gripper_pub = self.create_publisher(GripperCommand, "/gripper_command", 10)
-        self.tts_pub = self.create_publisher(String, "/tts_request", 10)
-        self.log_pub = self.create_publisher(LogEvent, "/log_event", 10)
+        # Publishers — QoS per spec Section V
+        self.search_pub     = self.create_publisher(VisionSearchRequest, "/vision_search_request", TOPIC_VISION)
+        self.transition_pub = self.create_publisher(StateTransition,     "/state_transition",      TOPIC_STATE)
+        self.arm_pub        = self.create_publisher(ArmCommand,          "/arm_command",           TOPIC_COMMAND)
+        self.gripper_pub    = self.create_publisher(GripperCommand,      "/gripper_command",       TOPIC_COMMAND)
+        self.tts_pub        = self.create_publisher(String,              "/tts_request",           TOPIC_TTS)
+        self.log_pub        = self.create_publisher(LogEvent,            "/log_event",             TOPIC_LOGGING)
 
-        self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, 10)
-        self.create_subscription(VisionResult, "/vision_result", self._on_vision_result, 10)
-        self.create_subscription(MotionFeedback, "/motion_feedback", self._on_motion_feedback, 10)
-        self.create_subscription(HandStatus, "/hand_status", self._on_hand_status, 10)
-        self.create_subscription(SafetyAlert, "/safety_alert", self._on_safety_alert, 10)
-        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, 10)
-        self.create_subscription(AuthResult, "/auth_result", self._on_auth_result, 10)
-        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, 10)
-        self.create_subscription(VisionStatus, "/vision_status", self._on_vision_status, 10)
+        # Subscribers — QoS per spec Section V
+        self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, TOPIC_VOICE_PIPELINE)
+        self.create_subscription(VisionResult,    "/vision_result",    self._on_vision_result,    TOPIC_VISION)
+        self.create_subscription(MotionFeedback,  "/motion_feedback",  self._on_motion_feedback,  TOPIC_SENSOR)
+        self.create_subscription(HandStatus,      "/hand_status",      self._on_hand_status,      TOPIC_VISION)
+        self.create_subscription(SafetyAlert,     "/safety_alert",     self._on_safety_alert,     TOPIC_STATE)
+        self.create_subscription(RobotState,      "/robot_state",      self._on_robot_state,      TOPIC_STATE)
+        self.create_subscription(AuthResult,      "/auth_result",      self._on_auth_result,      TOPIC_VOICE_PIPELINE)
+        self.create_subscription(Transcript,      "/raw_transcript",   self._on_transcript,       TOPIC_VOICE_PIPELINE)
+        self.create_subscription(VisionStatus,    "/vision_status",    self._on_vision_status,    TOPIC_VISION)
 
         self._lock = threading.Lock()
         self._task_thread = None
@@ -106,6 +113,10 @@ class PlannerNode(Node):
         self._voice_confirm_word = ""
         self._handover_height_adjustment = 0.0
         self._safe_drop_zone, self._handover_zone = self._load_robot_points()
+        self._kiosk_rest_pose, self._kiosk_interaction_pose, self._kiosk_return_timeout_s = self._load_kiosk_poses()
+        self.safe_limits = self._load_safe_limits()
+        self._presentation_timer = None
+        self._current_named_pose = ""
         self.get_logger().info("Planner node ready")
 
     def _load_robot_points(self):
@@ -123,6 +134,72 @@ class PlannerNode(Node):
             )
         except Exception:
             return (0.0, 0.35, 0.05), (0.0, 0.40, 0.10)
+
+    def _load_kiosk_poses(self):
+        try:
+            import yaml
+
+            with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
+                cfg = yaml.safe_load(handle) or {}
+            robot = cfg.get("robot", {})
+            arm = cfg.get("arm", {})
+            rest = [float(v) for v in arm.get("kiosk_rest_joint_angles", [0.0, 0.15, -0.35, 0.0, 0.10, 0.0])]
+            interaction = [float(v) for v in arm.get("kiosk_interaction_joint_angles", [0.0, -0.10, -0.05, 0.0, -0.05, 0.0])]
+            timeout_s = float(robot.get("kiosk_return_to_rest_seconds", 12.0))
+            if len(rest) != 6 or len(interaction) != 6:
+                raise ValueError("Kiosk poses must contain 6 joint angles each")
+            return rest, interaction, max(3.0, timeout_s)
+        except Exception:
+            return [0.0, 0.15, -0.35, 0.0, 0.10, 0.0], [0.0, -0.10, -0.05, 0.0, -0.05, 0.0], 12.0
+
+    def _load_safe_limits(self) -> SafeLimitSchema:
+        try:
+            import yaml
+            from acare_bringup.paths import THRESHOLDS_YAML
+
+            with open(THRESHOLDS_YAML, "r", encoding="utf-8") as handle:
+                threshold_cfg = yaml.safe_load(handle) or {}
+            with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
+                system_cfg = yaml.safe_load(handle) or {}
+            safety = threshold_cfg.get("safety", {})
+            soft = system_cfg.get("arm", {}).get("control_soft_limits", {}) or {}
+            velocity_hard = float(safety.get("velocity_limit_degs", 120.0))
+            current_hard = float(safety.get("current_limit_A", 8.0))
+            temperature_hard = float(safety.get("temperature_estop_C", 75.0))
+            gripper_force_hard = float(safety.get("gripper_force_limit_N", 15.0))
+            velocity_soft_ratio = float(soft.get("velocity_soft_ratio", 0.90))
+            current_soft_margin = float(soft.get("current_soft_margin_a", 0.50))
+            temperature_soft_margin = float(soft.get("temperature_soft_margin_c", 5.0))
+            gripper_force_soft_ratio = float(soft.get("gripper_force_soft_ratio", 0.90))
+            return SafeLimitSchema(
+                velocity_hard_deg_s=velocity_hard,
+                velocity_soft_deg_s=max(5.0, velocity_hard * velocity_soft_ratio),
+                current_hard_a=current_hard,
+                current_soft_a=max(0.1, current_hard - current_soft_margin),
+                temperature_hard_c=temperature_hard,
+                temperature_soft_c=max(5.0, temperature_hard - temperature_soft_margin),
+                gripper_force_hard_n=gripper_force_hard,
+                gripper_force_soft_n=max(0.5, gripper_force_hard * gripper_force_soft_ratio),
+                max_command_velocity_scale=float(soft.get("max_command_velocity_scale", 0.85)),
+                max_command_accel_limit=float(soft.get("max_command_accel_limit", 0.25)),
+                kiosk_velocity_scale=float(soft.get("kiosk_velocity_scale", 0.22)),
+                kiosk_accel_limit=float(soft.get("kiosk_accel_limit", 0.10)),
+            )
+        except Exception:
+            return SafeLimitSchema(
+                velocity_hard_deg_s=120.0,
+                velocity_soft_deg_s=108.0,
+                current_hard_a=8.0,
+                current_soft_a=7.5,
+                temperature_hard_c=75.0,
+                temperature_soft_c=70.0,
+                gripper_force_hard_n=15.0,
+                gripper_force_soft_n=13.5,
+                max_command_velocity_scale=0.85,
+                max_command_accel_limit=0.25,
+                kiosk_velocity_scale=0.22,
+                kiosk_accel_limit=0.10,
+            )
 
     def _speak(self, text: str):
         cmd = SpeechCommand(text=text)
@@ -149,6 +226,48 @@ class PlannerNode(Node):
         msg.total_task_ms = int((time.monotonic() - self.context.pipeline_start) * 1000) if self.context.pipeline_start else 0
         msg.safety_severity = self.world.safety_severity
         self.log_pub.publish(msg)
+
+    def _cancel_presentation_timer(self):
+        if self._presentation_timer:
+            self._presentation_timer.cancel()
+            self._presentation_timer = None
+
+    def _schedule_return_to_rest(self):
+        self._cancel_presentation_timer()
+        self._presentation_timer = threading.Timer(self._kiosk_return_timeout_s, self._return_to_rest_if_logged_out)
+        self._presentation_timer.daemon = True
+        self._presentation_timer.start()
+
+    def _return_to_rest_if_logged_out(self):
+        with self._lock:
+            if self.world.robot_state == "LOGGED_OUT":
+                self._send_named_pose("rest")
+
+    def _send_named_pose(self, pose_name: str) -> bool:
+        if pose_name == self._current_named_pose:
+            return True
+        joint_angles = self._kiosk_rest_pose if pose_name == "rest" else self._kiosk_interaction_pose
+        ok = self._send_joint_pose(
+            joint_angles,
+            velocity_scale=self.safe_limits.kiosk_velocity_scale,
+            accel_limit=self.safe_limits.kiosk_accel_limit,
+        )
+        if ok:
+            self._current_named_pose = pose_name
+        return ok
+
+    def _send_joint_pose(self, joint_angles: list[float], velocity_scale: float, accel_limit: float) -> bool:
+        cmd = ArmCommand()
+        cmd.command = "MOVE"
+        cmd.joint_angles = [float(v) for v in joint_angles]
+        cmd.velocity_scale = min(float(velocity_scale), self.safe_limits.max_command_velocity_scale)
+        cmd.accel_limit = min(float(accel_limit), self.safe_limits.max_command_accel_limit)
+        cmd.blocking = True
+        self._motion_event.clear()
+        self.arm_pub.publish(cmd)
+        if not self._motion_event.wait(timeout=15.0):
+            return False
+        return self._motion_success
 
     def _on_validated_intent(self, msg: ValidatedIntent):
         with self._lock:
@@ -190,6 +309,12 @@ class PlannerNode(Node):
     def _on_robot_state(self, msg: RobotState):
         self.world.robot_state = msg.state
         self.world.active_user_id = msg.active_user_id
+        if msg.state == "LOGGED_OUT":
+            self._send_gripper_open()
+            self._send_named_pose("rest")
+            self._schedule_return_to_rest()
+        else:
+            self._cancel_presentation_timer()
 
     def _on_auth_result(self, msg: AuthResult):
         if self.context.user_id and msg.user_id == self.context.user_id:
@@ -199,6 +324,9 @@ class PlannerNode(Node):
 
     def _on_transcript(self, msg: Transcript):
         word = (msg.text or "").strip().lower()
+        if word and self.world.robot_state == "LOGGED_OUT":
+            self._send_named_pose("interaction")
+            self._schedule_return_to_rest()
         if word in {"take", "yes", "got it", "ok", "okay"}:
             self._voice_confirm_word = word
         elif word == "lower":
@@ -381,13 +509,27 @@ class PlannerNode(Node):
         return True
 
     def _validate_release(self) -> bool:
-        hand_ok = self._latest_hand_status is not None and self._latest_hand_status.hand_detected and self._latest_hand_status.is_open and self._latest_hand_status.palm_up
+        """
+        Spec Section VII (SafetyKernel.validate_release):
+        Hand detected AND voice confirmed are BOTH required.
+        Face is ALWAYS advisory — if face_verified is False but hand+voice pass,
+        proceed and log FACE_SKIPPED. Do NOT block on face failure alone.
+        """
+        hand_ok = (
+            self._latest_hand_status is not None
+            and self._latest_hand_status.hand_detected
+            and self._latest_hand_status.is_open
+            and self._latest_hand_status.palm_up
+        )
         voice_ok = bool(self._voice_confirm_word)
+        # Hard requirement: both hand and voice must pass
         if not hand_ok or not voice_ok:
             return False
-        if self._face_skipped:
-            return True
-        return self._face_verified
+        # Face is advisory — log skip but do not block
+        if not self._face_verified and not self._face_skipped:
+            self.get_logger().warn("validate_release: face not verified — proceeding on hand+voice (FACE_SKIPPED logged)")
+            self._face_skipped = True   # ensure it gets logged
+        return True
 
     def _wait_for_face_verify(self, user_id: str, timeout: float) -> bool:
         if self._face_skipped:
@@ -416,16 +558,17 @@ class PlannerNode(Node):
             x=float(position[0]),
             y=float(position[1]),
             z=float(position[2]),
-            velocity_scale=float(max(0.1, velocity_scale)),
+            velocity_scale=float(min(max(0.1, velocity_scale), self.safe_limits.max_command_velocity_scale)),
             rotation_offset_deg=float(rotation_offset_deg),
         )
+        self._current_named_pose = ""
         self.context.motion_start = time.monotonic()
         q = self.ik.solve_grasp((validated.x, validated.y, validated.z))
         cmd = ArmCommand()
         cmd.command = "MOVE"
         cmd.joint_angles = [float(v) for v in q]
         cmd.velocity_scale = validated.velocity_scale
-        cmd.accel_limit = 0.3
+        cmd.accel_limit = self.safe_limits.max_command_accel_limit
         cmd.blocking = True
         self._motion_event.clear()
         self.arm_pub.publish(cmd)
@@ -444,7 +587,10 @@ class PlannerNode(Node):
         return True
 
     def _send_gripper_grasp(self, force_target: float) -> bool:
-        validated = GripperCommandSchema(command="GRASP", force_target=float(force_target))
+        validated = GripperCommandSchema(
+            command="GRASP",
+            force_target=min(float(force_target), self.safe_limits.gripper_force_soft_n),
+        )
         cmd = GripperCommand()
         cmd.command = validated.command.value
         cmd.force_target = validated.force_target
@@ -495,6 +641,10 @@ class PlannerNode(Node):
         if self.world.safety_severity == "WARNING":
             return 0.75
         return 1.0
+
+    def destroy_node(self):
+        self._cancel_presentation_timer()
+        super().destroy_node()
 
 
 def main(args=None):
