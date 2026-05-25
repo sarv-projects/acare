@@ -1,6 +1,0 @@
-string name
-string role
----
-bool success
-string staff_id
-string message
