@@ -64,7 +64,7 @@ class SemanticTurnDetector:
         if speech_duration > 3.0:
             return (True, 0.6)
 
-        tools = ['scalpel', 'scissors', 'forceps', 'bandage', 'gauze',
+        tools = ['cream', 'scissors', 'forceps',
                 'thermometer', 'oximeter', 'plaster']
         has_tool = any(t in text.lower() for t in tools)
         has_action = any(a in text.lower() for a in ['bring', 'fetch', 'get', 'need', 'want'])

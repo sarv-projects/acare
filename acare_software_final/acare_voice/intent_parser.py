@@ -12,8 +12,7 @@ if not GROQ_API_KEY:
 
 client = Groq(api_key=GROQ_API_KEY)
 
-VALID_TOOLS = ["scalpel", "scissors", "forceps", "bandage", "gauze",
-               "thermometer", "oximeter", "plaster"]
+VALID_TOOLS = ["cream", "scissors", "forceps", "thermometer", "oximeter", "plaster"]
 
 SYSTEM_PROMPT = f"""You are only a voice command parser for a surgical robot called ACARE.
 Your only job is to extract structured intent from voice commands spoken by surgeons.

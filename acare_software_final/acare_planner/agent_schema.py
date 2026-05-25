@@ -145,3 +145,148 @@ class AbortCommand(BaseModel):
 
     action: PlannerAction = PlannerAction.ABORT
     message: str = Field(min_length=1, max_length=160)
+
+
+# =============================================================================
+# AGENTIC DECISION VALIDATION
+# =============================================================================
+# Validates every proposal from the agentic layer (gpt-oss-120b) before
+# the planner acts on it. Catches malformed LLM output, out-of-range values,
+# and invalid action/decision_type combinations.
+#
+# If validation fails → the planner uses the deterministic fallback instead.
+# The robot NEVER executes an unvalidated agentic proposal.
+
+class AgenticDecisionType(str, Enum):
+    SEARCH_STRATEGY = "SEARCH_STRATEGY"
+    VISION_RECOVERY = "VISION_RECOVERY"
+    GRASP_RECOVERY = "GRASP_RECOVERY"
+    IK_RECOVERY = "IK_RECOVERY"
+    HANDOVER_RECOVERY = "HANDOVER_RECOVERY"
+    ABORT = "ABORT"
+
+
+class AgenticAction(str, Enum):
+    RETRY_UNIFORM_SEARCH = "RETRY_UNIFORM_SEARCH"
+    ASK_USER_CONFIRM_LOCATION = "ASK_USER_CONFIRM_LOCATION"
+    ABORT_TOOL_NOT_FOUND = "ABORT_TOOL_NOT_FOUND"
+    RETRY_GRASP_REPOSITION = "RETRY_GRASP_REPOSITION"
+    RETRY_GRASP_FORCE_INCREASE = "RETRY_GRASP_FORCE_INCREASE"
+    ABORT_GRASP_FAILED = "ABORT_GRASP_FAILED"
+    RETRY_IK_ALTERNATE_ORIENTATION = "RETRY_IK_ALTERNATE_ORIENTATION"
+    RETRY_IK_NEXT_CANDIDATE = "RETRY_IK_NEXT_CANDIDATE"
+    ABORT_IK_FAILED = "ABORT_IK_FAILED"
+    HANDOVER_Z_UP = "HANDOVER_Z_UP"
+    HANDOVER_Z_DOWN = "HANDOVER_Z_DOWN"
+    HANDOVER_VOICE_HAND_ONLY = "HANDOVER_VOICE_HAND_ONLY"
+    SEARCH_PRIORITY_ZONES = "SEARCH_PRIORITY_ZONES"
+
+
+class AgenticParams(BaseModel):
+    """Parameters proposed by the agentic layer. All values are safety-clamped."""
+    model_config = ConfigDict(extra="forbid")
+
+    force_delta_n: float = Field(ge=-5.0, le=7.0, default=0.0)
+    z_offset_m: float = Field(ge=-0.20, le=0.20, default=0.0)
+    rotation_deg: float = Field(ge=-180.0, le=180.0, default=0.0)
+    priority_zones: list[str] = Field(default_factory=list, max_length=10)
+    reset_probability_map: bool = False
+
+    @field_validator("priority_zones")
+    @classmethod
+    def validate_zones(cls, v: list[str]) -> list[str]:
+        # Zone names must be short strings, no injection
+        return [z[:32] for z in v if isinstance(z, str)]
+
+
+class AgenticDecision(BaseModel):
+    """
+    Validates a complete agentic decision from gpt-oss-120b.
+
+    Safety invariants enforced:
+    - force_delta_n clamped to [-5, +7] → total force never exceeds 10N (base 3N + 7N max)
+    - z_offset_m clamped to [-0.20, +0.20] → arm stays within workspace
+    - rotation_deg clamped to [-180, +180]
+    - tts_message max 160 chars (prevents LLM from generating essays)
+    - decision_type and action must be valid enum values
+    - params must pass AgenticParams validation
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    decision_type: AgenticDecisionType
+    reasoning: str = Field(min_length=1, max_length=500)
+    action: AgenticAction
+    tts_message: str = Field(min_length=1, max_length=160)
+    params: AgenticParams
+
+    @model_validator(mode="after")
+    def validate_action_matches_decision_type(self):
+        """Ensure the action is appropriate for the decision type."""
+        valid_actions_per_type = {
+            AgenticDecisionType.SEARCH_STRATEGY: {
+                AgenticAction.SEARCH_PRIORITY_ZONES,
+            },
+            AgenticDecisionType.VISION_RECOVERY: {
+                AgenticAction.RETRY_UNIFORM_SEARCH,
+                AgenticAction.ASK_USER_CONFIRM_LOCATION,
+                AgenticAction.ABORT_TOOL_NOT_FOUND,
+                AgenticAction.SEARCH_PRIORITY_ZONES,
+            },
+            AgenticDecisionType.GRASP_RECOVERY: {
+                AgenticAction.RETRY_GRASP_REPOSITION,
+                AgenticAction.RETRY_GRASP_FORCE_INCREASE,
+                AgenticAction.ABORT_GRASP_FAILED,
+            },
+            AgenticDecisionType.IK_RECOVERY: {
+                AgenticAction.RETRY_IK_ALTERNATE_ORIENTATION,
+                AgenticAction.RETRY_IK_NEXT_CANDIDATE,
+                AgenticAction.ABORT_IK_FAILED,
+            },
+            AgenticDecisionType.HANDOVER_RECOVERY: {
+                AgenticAction.HANDOVER_Z_UP,
+                AgenticAction.HANDOVER_Z_DOWN,
+                AgenticAction.HANDOVER_VOICE_HAND_ONLY,
+            },
+        }
+        allowed = valid_actions_per_type.get(self.decision_type)
+        if allowed and self.action not in allowed:
+            raise ValueError(
+                f"Action {self.action.value} is not valid for "
+                f"decision_type {self.decision_type.value}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_force_safety(self):
+        """Ensure force proposals stay well below ESTOP threshold."""
+        if self.params.force_delta_n > 7.0:
+            raise ValueError(
+                f"force_delta_n={self.params.force_delta_n} would exceed 10N "
+                f"(base 3N + delta). Max allowed: 7.0N"
+            )
+        return self
+
+
+def validate_agentic_decision(raw_dict: dict) -> AgenticDecision | None:
+    """
+    Validates a raw dict from the agentic LLM layer.
+
+    Returns:
+        AgenticDecision if valid, None if validation fails.
+
+    Usage in planner_node:
+        decision = agentic.propose_vision_recovery(...)
+        validated = validate_agentic_decision(decision)
+        if validated is None:
+            # Use deterministic fallback
+            ...
+        else:
+            # Safe to use validated.params.force_delta_n, etc.
+            ...
+    """
+    if raw_dict is None:
+        return None
+    try:
+        return AgenticDecision(**raw_dict)
+    except Exception:
+        return None

@@ -28,6 +28,7 @@ from acare_msgs.msg import (
 )
 
 from .ik_solver import IKSolver
+from .agentic_planner import AgenticPlanner
 from .agent_schema import (
     AbortCommand,
     ArmMoveCommand,
@@ -37,6 +38,7 @@ from .agent_schema import (
     SpeechCommand,
     TransitionCommand,
     VisionSearchCommand,
+    validate_agentic_decision,
 )
 from acare_bringup.qos_profiles import (
     TOPIC_COMMAND, TOPIC_SENSOR, TOPIC_STATE, TOPIC_VISION,
@@ -45,6 +47,10 @@ from acare_bringup.qos_profiles import (
 
 MAX_RETRIES = 3
 HANDOVER_TIMEOUT_S = 30.0
+# Dynamic palm tracking: velocity during incremental approach (very slow, contact-safe)
+PALM_APPROACH_VELOCITY = 0.3
+# Minimum distance change (metres) before arm moves toward palm — prevents jitter
+PALM_TRACKING_MIN_DELTA_M = 0.02
 
 
 @dataclass
@@ -80,6 +86,7 @@ class PlannerNode(Node):
         self.world = WorldState()
         self.context = TaskContext()
         self.ik = IKSolver()
+        self.agentic = AgenticPlanner(logger=self.get_logger())
 
         # Publishers — QoS per spec Section V
         self.search_pub     = self.create_publisher(VisionSearchRequest, "/vision_search_request", TOPIC_VISION)
@@ -382,19 +389,71 @@ class PlannerNode(Node):
             self.context = TaskContext()
 
     def _phase_vision_search(self, tool: str, user_id: str) -> bool:
+        """
+        Agentic vision search with LLM-based strategy and recovery.
+        Every agentic proposal is schema-validated before use.
+        Invalid proposals → deterministic fallback activates.
+        """
+        from datetime import datetime
+        current_hour = datetime.now().hour
+
         for attempt in range(1, MAX_RETRIES + 1):
             self.context.vision_retries = attempt
             self.context.vision_start = time.monotonic()
-            if attempt == 1:
-                self._speak(f"Searching for {tool}.")
-            elif attempt == 2:
-                self._speak(f"Still searching for {tool}. Please keep the tray clear.")
-            else:
-                self._speak(f"Last attempt to find {tool}.")
 
-            if self._execute_vision_search(tool, reset_probability_map=(attempt == 3), priority_zones=[]):
+            if attempt == 1:
+                raw_strategy = self.agentic.propose_search_strategy(
+                    tool, user_id, current_hour, attempt
+                )
+                validated = validate_agentic_decision(raw_strategy)
+                if validated:
+                    self._speak(validated.tts_message)
+                    reset_map = validated.params.reset_probability_map
+                    priority_zones = validated.params.priority_zones
+                else:
+                    # Schema validation failed — use safe defaults
+                    self.get_logger().warn("Agentic search strategy failed validation — using defaults")
+                    self._speak(f"Searching for {tool}.")
+                    reset_map = False
+                    priority_zones = []
+            else:
+                raw_recovery = self.agentic.propose_vision_recovery(
+                    tool, attempt, self.world.safety_severity, self.world.network_ok
+                )
+                validated = validate_agentic_decision(raw_recovery)
+                if validated:
+                    self._speak(validated.tts_message)
+                    action = validated.action.value
+                    reset_map = validated.params.reset_probability_map
+                    priority_zones = validated.params.priority_zones
+                else:
+                    # Fallback: deterministic escalation
+                    self.get_logger().warn(f"Agentic vision recovery attempt {attempt} failed validation")
+                    if attempt == 2:
+                        self._speak(f"Still searching for {tool}. Please keep the tray clear.")
+                    else:
+                        self._speak(f"Last attempt to find {tool}.")
+                    action = "RETRY_UNIFORM_SEARCH"
+                    reset_map = (attempt == MAX_RETRIES)
+                    priority_zones = []
+
+                if validated and validated.action.value == "ASK_USER_CONFIRM_LOCATION":
+                    time.sleep(5.0)
+
+            if self._execute_vision_search(tool, reset_probability_map=reset_map, priority_zones=priority_zones):
+                self.agentic.learn_from_success(
+                    type('Ctx', (), {'tool_canonical': tool, 'zone_found': self._get_last_zone()})(),
+                    user_id
+                )
                 return True
+
         return False
+
+    def _get_last_zone(self) -> str:
+        """Get zone from last vision result for learning."""
+        if self._latest_vision_result and self._latest_vision_result.found:
+            return self._latest_vision_result.zone
+        return ""
 
     def _execute_vision_search(self, tool: str, reset_probability_map: bool, priority_zones: list[str]) -> bool:
         cmd = VisionSearchCommand(
@@ -423,22 +482,63 @@ class PlannerNode(Node):
         return True
 
     def _phase_grasp(self, tool: str) -> bool:
+        """
+        Agentic grasp with schema-validated LLM recovery.
+        Every agentic proposal is validated before execution.
+        Invalid proposals → deterministic escalation (reposition → force increase).
+        """
+        base_force = 3.0
+
         for attempt in range(1, MAX_RETRIES + 1):
             self.context.grasp_retries = attempt
-            force_target = min(10.0, 3.0 + max(0, attempt - 1))
+
+            if attempt == 1:
+                force_target = base_force
+                rotation_deg = 0.0
+            else:
+                raw_recovery = self.agentic.propose_grasp_recovery(
+                    tool, attempt, self.world.gripper_force, self.world.safety_severity
+                )
+                validated = validate_agentic_decision(raw_recovery)
+                if validated:
+                    self._speak(validated.tts_message)
+                    force_target = base_force + validated.params.force_delta_n
+                    rotation_deg = validated.params.rotation_deg
+                else:
+                    # Deterministic fallback: escalate force by 1N per attempt
+                    self.get_logger().warn(f"Agentic grasp recovery attempt {attempt} failed validation")
+                    self._speak(f"Retrying grasp of {tool}.")
+                    force_target = base_force + (attempt - 1)
+                    rotation_deg = 15.0 * (attempt - 1)
+
+                # Safety clamp — NEVER exceed soft limit regardless of what LLM says
+                force_target = min(force_target, float(self.safe_limits.gripper_force_soft_n))
+
             if self.context.grasp_point is None:
                 return False
-            pregrasp = (self.context.grasp_point[0], self.context.grasp_point[1], self.context.grasp_point[2] + 0.05)
+
+            pregrasp = (
+                self.context.grasp_point[0],
+                self.context.grasp_point[1],
+                self.context.grasp_point[2] + 0.05,
+            )
             if not self._send_arm_move(pregrasp, velocity_scale=self._velocity_scale() * 0.8):
                 continue
-            if not self._send_arm_move(self.context.grasp_point, velocity_scale=self._velocity_scale() * 0.5):
+            if not self._send_arm_move(
+                self.context.grasp_point,
+                velocity_scale=self._velocity_scale() * 0.5,
+                rotation_offset_deg=rotation_deg,
+            ):
                 continue
             self._send_gripper_grasp(force_target)
             time.sleep(0.5)
             self.world.arm_holding = True
-            if self.world.gripper_force >= 0.5 or attempt == 1:
+
+            if self.world.gripper_force >= 0.5:
                 self._transition_state("HOLDING", f"holding_{tool}")
                 return True
+
+            # Grasp failed — try next detection candidate if available
             if self.context.detection_candidates:
                 next_candidate = self.context.detection_candidates.pop(0)
                 self.context.grasp_point = (
@@ -446,14 +546,25 @@ class PlannerNode(Node):
                     float(next_candidate["y"]),
                     float(next_candidate["z"]),
                 )
+
         return False
 
     def _phase_handover(self, tool: str, user_id: str, user_name: str) -> bool:
+        """
+        Full handover with:
+        - Agentic face recovery (Z-height search via gpt-oss-120b)
+        - Dynamic palm tracking (incremental approach toward /hand_status x,y,z)
+        - Voice confirmation
+        - Safety-validated release gate
+        """
         self._transition_state("HOLDING", f"move_to_handover_{tool}")
+
+        # Get handover pose with learned user Z-offset
+        z_offset = self.agentic.get_handover_z_offset(user_id)
         handover_pose = (
             self._handover_zone[0],
             self._handover_zone[1],
-            self._handover_zone[2] + self._handover_height_adjustment,
+            self._handover_zone[2] + z_offset + self._handover_height_adjustment,
         )
         if not self._send_arm_move(handover_pose, velocity_scale=self._velocity_scale() * 0.6):
             return False
@@ -466,47 +577,156 @@ class PlannerNode(Node):
         self._face_skipped = False
         handover_start = time.monotonic()
 
-        current_pose = list(handover_pose)
+        # --- SUBSTATE 1: FACE_VERIFY (agentic Z-height recovery) ---
+        current_z = handover_pose[2]
         for attempt in range(1, 4):
             self.context.face_retries = attempt
             if self._wait_for_face_verify(user_id, timeout=8.0):
                 break
-            if attempt == 1:
-                current_pose[2] += 0.05
-                self._speak("Please face the camera.")
-                self._send_arm_move(tuple(current_pose), velocity_scale=self._velocity_scale() * 0.3)
-            elif attempt == 2:
-                current_pose[2] = handover_pose[2] - 0.05
-                self._speak("Adjusting position for face verification.")
-                self._send_arm_move(tuple(current_pose), velocity_scale=self._velocity_scale() * 0.3)
+
+            # Agentic recovery: propose Z adjustment or voice+hand fallback
+            raw_recovery = self.agentic.propose_handover_face_recovery(
+                user_name, tool, attempt, current_z
+            )
+            validated = validate_agentic_decision(raw_recovery)
+            if validated:
+                self._speak(validated.tts_message)
+                action = validated.action.value
+                z_delta = validated.params.z_offset_m
             else:
+                # Deterministic fallback
+                self.get_logger().warn(f"Agentic handover face recovery attempt {attempt} failed validation")
+                if attempt == 1:
+                    action = "HANDOVER_Z_UP"
+                    z_delta = 0.05
+                    self._speak("Please look at the camera.")
+                elif attempt == 2:
+                    action = "HANDOVER_Z_DOWN"
+                    z_delta = -0.05
+                    self._speak("Please face the camera directly.")
+                else:
+                    action = "HANDOVER_VOICE_HAND_ONLY"
+                    z_delta = 0.0
+                    self._speak("Face verification unavailable. Proceeding with voice and hand confirmation only.")
+
+            if action == "HANDOVER_VOICE_HAND_ONLY":
                 self._face_skipped = True
-                self._speak("Face verification unavailable. Proceeding with voice and hand confirmation only.")
+                self._log_event("FACE_VERIFY_SKIPPED", tool=tool,
+                                description="Face unavailable — proceeding on voice+hand")
+                break
+            elif action == "HANDOVER_Z_UP":
+                current_z += abs(z_delta) if z_delta != 0.0 else 0.05
+                self._send_arm_move(
+                    (handover_pose[0], handover_pose[1], current_z),
+                    velocity_scale=self._velocity_scale() * 0.3,
+                )
+            elif action == "HANDOVER_Z_DOWN":
+                current_z -= abs(z_delta) if z_delta != 0.0 else 0.05
+                self._send_arm_move(
+                    (handover_pose[0], handover_pose[1], current_z),
+                    velocity_scale=self._velocity_scale() * 0.3,
+                )
 
         if (time.monotonic() - handover_start) > HANDOVER_TIMEOUT_S:
             return False
 
+        # --- SUBSTATE 2: HAND_DETECT + DYNAMIC PALM TRACKING ---
         self._speak("Please place your open palm under the gripper.")
-        if not self._wait_for_hand_detect(timeout=10.0):
-            self._speak("Please open your palm.")
-            if not self._wait_for_hand_detect(timeout=8.0):
-                return False
+        hand_ok = self._wait_for_hand_detect_with_tracking(
+            current_arm_pos=(handover_pose[0], handover_pose[1], current_z),
+            timeout=10.0,
+        )
+        if not hand_ok:
+            self._speak("Please open your palm and hold it steady.")
+            hand_ok = self._wait_for_hand_detect_with_tracking(
+                current_arm_pos=(handover_pose[0], handover_pose[1], current_z),
+                timeout=8.0,
+            )
+        if not hand_ok:
+            return False
 
+        # --- SUBSTATE 3: VOICE_CONFIRM ---
         self._speak("Say take to receive.")
         if not self._wait_for_voice_confirm(user_id, timeout=5.0):
             self._speak("Say take to receive.")
             if not self._wait_for_voice_confirm(user_id, timeout=5.0):
                 return False
 
+        # --- RELEASE GATE ---
         if not self._validate_release():
             self._speak("Handover verification failed. Returning tool to tray.")
             return False
 
         if self._face_skipped:
-            self._log_event("FACE_VERIFY_SKIPPED", tool=tool, description="Face unavailable at handover")
+            self._log_event("FACE_VERIFY_SKIPPED", tool=tool,
+                            description=f"Handover to {user_id} without face verification")
+
+        # Learn height preference for next session
+        if self._handover_height_adjustment != 0.0:
+            cmd = "higher" if self._handover_height_adjustment > 0 else "lower"
+            self.agentic.learn_height_adjustment(user_id, cmd)
+
         self._send_gripper_release()
         self.world.arm_holding = False
         return True
+
+    def _wait_for_hand_detect_with_tracking(
+        self,
+        current_arm_pos: tuple[float, float, float],
+        timeout: float,
+    ) -> bool:
+        """
+        Spec Section VII: Dynamic palm tracking.
+        Waits for hand detection AND incrementally approaches the palm center
+        using real-time /hand_status (x,y,z). Each position update validated
+        by workspace bounds. Velocity: PALM_APPROACH_VELOCITY (very slow).
+
+        The arm makes small incremental moves toward the detected palm,
+        updating its target as the hand position changes. This handles
+        the case where the user's hand isn't perfectly aligned with the
+        fixed handover zone.
+        """
+        deadline = time.monotonic() + timeout
+        last_move_target = current_arm_pos
+        last_move_time = 0.0
+
+        while time.monotonic() < deadline:
+            hs = self._latest_hand_status
+            if hs is None:
+                time.sleep(0.1)
+                continue
+
+            if hs.hand_detected and hs.is_open and hs.palm_up:
+                # Hand is ready — check if we should approach closer
+                palm_pos = (hs.x, hs.y, hs.z)
+
+                # Only move if palm position is valid (non-zero) and within workspace
+                if palm_pos[0] != 0.0 or palm_pos[1] != 0.0 or palm_pos[2] != 0.0:
+                    # Check if palm moved enough to warrant a new arm move
+                    delta = sum((a - b) ** 2 for a, b in zip(palm_pos, last_move_target)) ** 0.5
+                    now = time.monotonic()
+
+                    if delta > PALM_TRACKING_MIN_DELTA_M and (now - last_move_time) > 0.5:
+                        # Validate target is within workspace
+                        w = {'xmin': -0.4, 'xmax': 0.4, 'ymin': -0.3, 'ymax': 0.3, 'zmin': 0.0, 'zmax': 0.5}
+                        x, y, z = palm_pos
+                        if (w['xmin'] <= x <= w['xmax'] and
+                            w['ymin'] <= y <= w['ymax'] and
+                            w['zmin'] <= z <= w['zmax']):
+                            # Move arm toward palm (non-blocking, slow)
+                            self._send_arm_move(palm_pos, velocity_scale=PALM_APPROACH_VELOCITY)
+                            last_move_target = palm_pos
+                            last_move_time = now
+
+                return True  # Hand detected, open, palm up — success
+
+            # Hand detected but not ready (closed or not palm-up)
+            if hs.hand_detected and not hs.is_open:
+                pass  # Wait — user is positioning
+
+            time.sleep(0.1)
+
+        return False
 
     def _validate_release(self) -> bool:
         """

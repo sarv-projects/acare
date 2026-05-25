@@ -2,8 +2,8 @@ import re
 from typing import Tuple, List
 
 VALID_TOOLS = [
-    "scalpel", "scissors", "forceps", "bandage",
-    "gauze", "thermometer", "oximeter", "plaster",
+    "cream", "scissors", "forceps",
+    "thermometer", "oximeter", "plaster",
 ]
 
 FILLER_WORDS = [
@@ -18,16 +18,15 @@ POLITE_MARKERS = [
 ]
 
 SIMPLE_ALIASES = {
-    "blade":          "scalpel",
-    "surgical blade": "scalpel",
-    "bandage cloth":  "bandage",
-    "gauze pad":      "gauze",
-    "gauze swab":     "gauze",
     "pulse ox":       "oximeter",
     "spo2":           "oximeter",
     "band aid":       "plaster",
     "bandaid":        "plaster",
     "adhesive strip": "plaster",
+    "lotion":         "cream",
+    "ointment":       "cream",
+    "topical":        "cream",
+    "temp probe":     "thermometer",
 }
 
 

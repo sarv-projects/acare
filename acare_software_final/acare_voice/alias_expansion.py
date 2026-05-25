@@ -20,64 +20,60 @@ import re
 # Key: alias phrase (lowercase for case-insensitive matching)
 # Value: canonical tool name (must be in VALID_TOOLS)
 ALIAS_MAP = {
-    # Scalpel aliases
-    "sharp one": "scalpel",
-    "the sharp one": "scalpel",
-    "sharp tool": "scalpel",
-    "blade": "scalpel",
-    "cutting blade": "scalpel",
-    "surgical blade": "scalpel",
-    
+    # Cream aliases
+    "cream": "cream",
+    "lotion": "cream",
+    "ointment": "cream",
+    "topical": "cream",
+    "the cream": "cream",
+    "tube": "cream",
+
     # Scissors aliases
-    "scissors": "scissors",  # Already canonical, but handle for clarity
+    "scissors": "scissors",
     "cuts": "scissors",
-    "cutting tool": "scissors",  # Ambiguous - could also be scalpel
+    "cutting tool": "scissors",
     "snips": "scissors",
-    
+    "medical scissors": "scissors",
+
     # Forceps aliases
-    "forceps": "forceps",  # Canonical
-    "forcep": "forceps",  # Misspelling
-    "long tool": "forceps",  # Ambiguous - context dependent
+    "forceps": "forceps",
+    "forcep": "forceps",
+    "long tool": "forceps",
     "grabber": "forceps",
     "grasper": "forceps",
-    
-    # Bandage aliases
-    "bandage": "bandage",  # Canonical
-    "tape": "bandage",
-    "wrap": "bandage",
-    "dressing": "bandage",
-    
-    # Gauze aliases
-    "gauze": "gauze",  # Canonical
-    "cloth": "gauze",
-    "pad": "gauze",
-    "cotton pad": "gauze",
-    
+    "surgical forceps": "forceps",
+    "tweezers": "forceps",
+    "clamps": "forceps",
+
     # Thermometer aliases
-    "thermometer": "thermometer",  # Canonical
+    "thermometer": "thermometer",
     "temp": "thermometer",
     "temperature": "thermometer",
-    
+    "temp probe": "thermometer",
+
     # Oximeter aliases
-    "oximeter": "oximeter",  # Canonical
+    "oximeter": "oximeter",
     "oxygen meter": "oximeter",
     "pulse ox": "oximeter",
-    
+    "oxymeter": "oximeter",
+    "spo2": "oximeter",
+
     # Plaster aliases
-    "plaster": "plaster",  # Canonical
+    "plaster": "plaster",
     "cast": "plaster",
-    "cast material": "plaster",
+    "band aid": "plaster",
+    "bandaid": "plaster",
+    "adhesive strip": "plaster",
 }
 
 # List of valid canonical tool names (from intent_parser.py)
-VALID_TOOLS = ["scalpel", "scissors", "forceps", "bandage", "gauze", 
-               "thermometer", "oximeter", "plaster"]
+VALID_TOOLS = ["cream", "scissors", "forceps", "thermometer", "oximeter", "plaster"]
 
 # Ambiguous aliases that could map to multiple tools
 # These need user confirmation
 AMBIGUOUS_ALIASES = {
-    "cutting tool": ["scalpel", "scissors"],
-    "long tool": ["forceps"],  # Could also be something else - context dependent
+    "cutting tool": ["scissors", "forceps"],
+    "long tool": ["forceps"],
 }
 
 
