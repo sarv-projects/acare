@@ -87,7 +87,7 @@ class TTSQueue:
 
     def _speak_edge_tts(self, text: str) -> bool:
         try:
-            voice = "en-US-AvaNeural"
+            voice = "en-IN-NeerjaNeural"
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 tmp_path = f.name
 
@@ -126,6 +126,64 @@ class TTSQueue:
             self._tts_active.clear()
             return False
 
+    def _speak_kokoro(self, text: str) -> bool:
+        """
+        Spec Section VIII: Kokoro ONNX INT8 offline fallback.
+        Activates automatically when Edge TTS fails (no internet).
+        pip install kokoro-onnx  |  Apache 2.0 license  |  82M params
+        Model files: kokoro-v1.0.onnx + voices-v1.0.bin (download once, cache locally)
+        """
+        try:
+            from kokoro_onnx import Kokoro
+            import soundfile as sf
+            import numpy as np
+
+            # Lazy-init — only load model once per session
+            if not hasattr(self, '_kokoro') or self._kokoro is None:
+                import os
+                model_path  = os.path.expanduser("~/.cache/kokoro/kokoro-v1.0.onnx")
+                voices_path = os.path.expanduser("~/.cache/kokoro/voices-v1.0.bin")
+                if not os.path.exists(model_path) or not os.path.exists(voices_path):
+                    print("[TTSQueue/kokoro] Model files not found — download with: "
+                          "python -m kokoro_onnx.download")
+                    return False
+                self._kokoro = Kokoro(model_path, voices_path)
+
+            # af_heart is a neutral English voice; closest to Indian English available
+            samples, sample_rate = self._kokoro.create(
+                text, voice="af_heart", speed=0.9, lang="en-us"
+            )
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                tmp_path = f.name
+            sf.write(tmp_path, samples, sample_rate)
+
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
+            self._tts_active.set()
+
+            while pygame.mixer.music.get_busy():
+                if self._barge_in_triggered.is_set():
+                    pygame.mixer.music.stop()
+                    self._barge_in_triggered.clear()
+                    break
+                time.sleep(0.02)
+
+            self._tts_active.clear()
+            pygame.mixer.music.unload()
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            return True
+
+        except ImportError:
+            print("[TTSQueue/kokoro] kokoro-onnx not installed. Run: pip install kokoro-onnx")
+            return False
+        except Exception as e:
+            print(f"[TTSQueue/kokoro] Error: {e}")
+            return False
+
     def _process_queue(self):
         while not self._stop_event.is_set():
             try:
@@ -153,8 +211,15 @@ class TTSQueue:
                 if use_pyttsx3 or priority == Priority.URGENT.value:
                     self._speak_pyttsx3(text)
                 else:
+                    # Spec Section VIII fallback chain:
+                    #   1. Edge TTS (normal, Indian English, cloud)
+                    #   2. Kokoro ONNX (offline fallback, local)
+                    #   3. pyttsx3 (emergency fallback, always works)
                     if not self._speak_edge_tts(text):
-                        self._speak_pyttsx3(text)
+                        print("[TTSQueue] Edge TTS failed — trying Kokoro offline fallback")
+                        if not self._speak_kokoro(text):
+                            print("[TTSQueue] Kokoro failed — falling back to pyttsx3")
+                            self._speak_pyttsx3(text)
 
                 if priority > Priority.URGENT.value:
                     time.sleep(0.6)

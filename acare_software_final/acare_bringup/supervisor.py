@@ -97,6 +97,65 @@ def trigger_estop(reason: str):
     ], timeout=5.0)
 
 
+def check_power_recovery():
+    """
+    Spec Section XVII: Power Recovery.
+    On boot, check last SQLite state.
+    If last state was EXECUTING or HOLDING → arm was mid-task during shutdown.
+    Publishes a safe-state transition and TTS warning.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    db_path = Path(__file__).resolve().parent.parent / 'logs' / 'acare_logs.db'
+    if not db_path.exists():
+        print('[supervisor] No log DB found — clean boot.')
+        return
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT state FROM events ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+
+        if row is None:
+            return
+
+        last_state = str(row[0]).upper()
+        print(f'[supervisor] Last known state from DB: {last_state}')
+
+        if last_state in {'EXECUTING', 'HOLDING', 'HANDOVER'}:
+            print('[supervisor] POWER_RECOVERY: last state was mid-task. Publishing safe state.')
+
+            # Transition to STANDBY (safe) via state_transition topic
+            subprocess.run([
+                'ros2', 'topic', 'pub', '--once', '/state_transition',
+                'acare_msgs/msg/StateTransition',
+                '{target_state: "STANDBY", reason: "power_recovery"}'
+            ], timeout=5.0)
+
+            # Announce recovery via TTS
+            subprocess.run([
+                'ros2', 'topic', 'pub', '--once', '/tts_request',
+                'std_msgs/msg/String',
+                '{data: "System recovered from unexpected shutdown. Please verify workspace."}'
+            ], timeout=5.0)
+
+            # Log the recovery event
+            subprocess.run([
+                'ros2', 'topic', 'pub', '--once', '/log_event',
+                'acare_msgs/msg/LogEvent',
+                ('{event_type: "POWER_RECOVERY", user_id: "", tool: "", '
+                 'state: "STANDBY", description: "Recovered from unexpected shutdown", '
+                 'timestamp: 0, voice_e2e_ms: 0, vision_search_ms: 0, '
+                 'motion_ms: 0, total_task_ms: 0, safety_severity: ""}')
+            ], timeout=5.0)
+
+    except Exception as e:
+        print(f'[supervisor] Power recovery check failed: {e}')
+
+
 def monitor():
     """Main monitoring loop. Checks all nodes every 5 seconds."""
     print('[supervisor] Monitoring started. Check interval: 5s')
@@ -120,9 +179,13 @@ def monitor():
 
 def main():
     import os
-    # Source ROS2 if not already sourced
     if 'ROS_DISTRO' not in os.environ:
         print('[supervisor] WARNING: ROS2 not sourced. Run: source /opt/ros/jazzy/setup.bash')
+
+    # Spec Section XVII: Check for power recovery condition before starting nodes
+    print('[supervisor] Checking for power recovery condition...')
+    time.sleep(2.0)   # brief wait for ROS2 graph to initialise after launch
+    check_power_recovery()
 
     print('[supervisor] Starting all ACARE nodes...')
     for name in NODE_CMDS:

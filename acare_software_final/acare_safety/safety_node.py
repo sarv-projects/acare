@@ -28,6 +28,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
 from acare_bringup.paths import THRESHOLDS_YAML
+from acare_bringup.qos_profiles import TOPIC_SENSOR, TOPIC_STATE, TOPIC_COMMAND
 
 try:
     from acare_msgs.msg import SafetyAlert, MotionFeedback
@@ -71,16 +72,12 @@ class SafetyNode(Node):
             return
 
         # RELIABLE QoS for alerts — must not be dropped
-        self.alert_pub = self.create_publisher(SafetyAlert, '/safety_alert', 10)
-
-        # BEST_EFFORT for sensor data — always use latest
-        sensor_qos = QoSProfile(depth=10,
-                                reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.alert_pub = self.create_publisher(SafetyAlert, '/safety_alert', TOPIC_STATE)
 
         self.create_subscription(LaserScan, '/scan',
-                                 self._on_lidar, sensor_qos)
+                                 self._on_lidar, TOPIC_SENSOR)
         self.create_subscription(MotionFeedback, '/motion_feedback',
-                                 self._on_telemetry, sensor_qos)
+                                 self._on_telemetry, TOPIC_SENSOR)
 
         self.get_logger().info('Safety node ready')
 

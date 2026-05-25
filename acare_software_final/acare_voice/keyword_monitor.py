@@ -74,8 +74,10 @@ class KeywordMonitor:
 
             self._last_keyword = keyword
 
+            # Spec Section VIII: 100ms collision window.
+            # Previous value was 200ms — corrected to spec-mandated 0.1s.
             self._collision_timer = threading.Timer(
-                0.2,
+                0.1,
                 self._confirm_estop,
                 args=[keyword, full_text]
             )
