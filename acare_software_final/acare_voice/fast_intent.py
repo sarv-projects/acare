@@ -1,13 +1,12 @@
 import re
 from typing import Optional, Dict, Tuple
 
-VALID_TOOLS = ["scalpel", "scissors", "forceps", "bandage", "gauze",
-               "thermometer", "oximeter", "plaster"]
+VALID_TOOLS = ["cream", "scissors", "forceps", "thermometer", "oximeter", "plaster"]
 
 FETCH_PATTERNS = [
-    re.compile(r"(?:bring|fetch|get|give|pass)\s+(?:me\s+)?(?:the\s+)?(SCALPEL|SCISSORS|FORCEPS|BANDAGE|GAUZE|THERMOMETER|OXIMETER|PLASTER)", re.I),
-    re.compile(r"(?:need|want|require)\s+(?:the\s+)?(SCALPEL|SCISSORS|FORCEPS|BANDAGE|GAUZE|THERMOMETER|OXIMETER|PLASTER)", re.I),
-    re.compile(r"(?:hand|pass)\s+(?:me\s+)?(?:the\s+)?(SCALPEL|SCISSORS|FORCEPS|BANDAGE|GAUZE|THERMOMETER|OXIMETER|PLASTER)", re.I),
+    re.compile(r"(?:bring|fetch|get|give|pass)\s+(?:me\s+)?(?:the\s+)?(CREAM|SCISSORS|FORCEPS|THERMOMETER|OXIMETER|PLASTER)", re.I),
+    re.compile(r"(?:need|want|require)\s+(?:the\s+)?(CREAM|SCISSORS|FORCEPS|THERMOMETER|OXIMETER|PLASTER)", re.I),
+    re.compile(r"(?:hand|pass)\s+(?:me\s+)?(?:the\s+)?(CREAM|SCISSORS|FORCEPS|THERMOMETER|OXIMETER|PLASTER)", re.I),
 ]
 
 CONFIRM_PATTERNS = [
@@ -39,7 +38,7 @@ MULTI_TOOL_INDICATORS = [
 ]
 
 FOLLOW_UP_PATTERNS = [
-    re.compile(r"^(and\s+(?:the\s+)?(SCALPEL|SCISSORS|FORCEPS|BANDAGE|GAUZE|THERMOMETER|OXIMETER|PLASTER))$", re.I),
+    re.compile(r"^(and\s+(?:the\s+)?(CREAM|SCISSORS|FORCEPS|THERMOMETER|OXIMETER|PLASTER))$", re.I),
     re.compile(r"^(?:the\s+)?(other|that|same|next)\s+(one|tool|thing|item)$", re.I),
     re.compile(r"^(?:get|bring|fetch)\s+(?:that|it|the other one)$", re.I),
 ]

@@ -9,22 +9,16 @@ from acare_bringup.paths import SYSTEM_YAML
 
 
 DEFAULT_CLASS_SETS = {
-    8: [
-        "scalpel",
-        "scissors",
-        "forceps",
-        "bandage",
-        "gauze",
-        "thermometer",
-        "oximeter",
-        "plaster",
-    ],
+    # The trained model has exactly 6 classes in this order.
+    # Order must match the model's output channel ordering (class index 0-5).
+    # Confirmed from Ultralytics Hub dataset: cream(0), medical scissors(1),
+    # oxymeter(2), plaster(3), surgical forceps(4), thermometer(5)
     6: [
         "cream",
-        "scissors",
-        "oximeter",
+        "medical scissors",
+        "oxymeter",
         "plaster",
-        "forceps",
+        "surgical forceps",
         "thermometer",
     ],
 }

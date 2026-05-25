@@ -36,14 +36,21 @@ WORKSPACE = {
     'zmin':  0.0, 'zmax': 0.5,
 }
 
-# All tool classes the model can detect
+# All tool classes the model can detect (6 classes, matching trained YOLO model)
 ALL_TOOLS = [
-    'scalpel', 'scissors', 'forceps', 'bandage',
-    'gauze', 'thermometer', 'oximeter', 'plaster',
+    'cream', 'medical scissors', 'oxymeter',
+    'plaster', 'surgical forceps', 'thermometer',
 ]
 
 # Map from model class name to canonical system name
-CANONICAL = {tool: tool for tool in ALL_TOOLS}
+CANONICAL = {
+    'cream': 'cream',
+    'medical scissors': 'scissors',
+    'oxymeter': 'oximeter',
+    'plaster': 'plaster',
+    'surgical forceps': 'forceps',
+    'thermometer': 'thermometer',
+}
 
 # Reverse map: canonical → model class name (for lookup by tool name from intent)
 REVERSE_CANONICAL = {v: k for k, v in CANONICAL.items()}
