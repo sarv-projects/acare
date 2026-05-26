@@ -57,7 +57,7 @@ camera:
   T_robot_camera: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
 
 vision:
-  model_path: 'models/yolo_acare.onnx'
+  model_path: 'models/acare_v26.onnx'
   confidence_threshold: 0.70
   low_light_confidence_threshold: 0.56
   low_light_v_mean_threshold: 75.0
