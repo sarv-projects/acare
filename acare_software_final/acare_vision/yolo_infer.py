@@ -39,8 +39,17 @@ class YOLOv11ONNX:
         _, _, self.H, self.W = self.session.get_inputs()[0].shape
         self.conf_thresh = conf_thresh
         output_shape = self.session.get_outputs()[0].shape
-        output_channels = output_shape[1] if len(output_shape) >= 2 and isinstance(output_shape[1], int) else 12
-        self.num_classes = max(1, int(output_channels) - 4)
+
+        # Detect YOLO26 NMS-free format: output [1, 300, 6] = [x1,y1,x2,y2,conf,cls]
+        # vs YOLO11 format: output [1, 4+num_classes, num_anchors]
+        if len(output_shape) == 3 and output_shape[2] == 6:
+            self._nms_free = True
+            self.num_classes = 6
+        else:
+            self._nms_free = False
+            output_channels = output_shape[1] if len(output_shape) >= 2 and isinstance(output_shape[1], int) else 12
+            self.num_classes = max(1, int(output_channels) - 4)
+
         self.class_names = DEFAULT_CLASS_SETS.get(
             self.num_classes,
             [f"class_{idx}" for idx in range(self.num_classes)],
@@ -194,8 +203,47 @@ class YOLOv11ONNX:
         return results
 
     def postprocess(self, output: np.ndarray, orig_h: int, orig_w: int) -> list[dict]:
+        if self._nms_free:
+            return self._postprocess_nms_free(output, orig_h, orig_w, self.conf_thresh)
         detections = self._postprocess_single(output, orig_h, orig_w, self.conf_thresh, "base")
         return self._merge_detections(detections, self.conf_thresh)
+
+    def _postprocess_nms_free(
+        self,
+        output: np.ndarray,
+        orig_h: int,
+        orig_w: int,
+        score_threshold: float,
+        variant_name: str = "base",
+    ) -> list[dict]:
+        """
+        YOLO26 NMS-free output: [1, 300, 6] = [x1, y1, x2, y2, confidence, class_id]
+        Coordinates are in model input space (640x640). Scale to original image.
+        """
+        detections = output[0]  # [300, 6]
+        valid = detections[detections[:, 4] >= score_threshold]
+
+        if len(valid) == 0:
+            return []
+
+        scale_x = orig_w / self.W
+        scale_y = orig_h / self.H
+
+        results = []
+        for det in valid:
+            x1, y1, x2, y2, conf, cls_id = det
+            cls_id = int(cls_id)
+            class_name = self.class_names[cls_id] if cls_id < len(self.class_names) else f"class_{cls_id}"
+            results.append({
+                "class_id": cls_id,
+                "class_name": class_name,
+                "canonical_name": class_name,
+                "confidence": float(conf),
+                "bbox": (int(x1 * scale_x), int(y1 * scale_y),
+                         int(x2 * scale_x), int(y2 * scale_y)),
+                "variant": variant_name,
+            })
+        return results
 
     def _merge_detections(self, detections: list[dict], score_threshold: float) -> list[dict]:
         if not detections:
@@ -220,6 +268,30 @@ class YOLOv11ONNX:
 
     def infer(self, bgr_frame: np.ndarray) -> list[dict]:
         h, w = bgr_frame.shape[:2]
+
+        if self._nms_free:
+            # YOLO26 NMS-free: simpler pipeline, no multi-variant TTA needed
+            # (model already handles varying conditions better due to training augmentation)
+            profile = self._scene_profile(bgr_frame)
+            score_threshold = self.low_light_conf_thresh if profile["is_low_light"] else self.conf_thresh
+
+            # Apply light enhancement only in very dark conditions
+            if profile["is_very_dark"]:
+                working = self._enhance_for_low_light(bgr_frame, profile)
+            else:
+                working = bgr_frame
+
+            inp = self._prepare_input(working)
+            outputs = self.session.run(None, {self.input_name: inp})
+            results = self._postprocess_nms_free(outputs[0], h, w, score_threshold)
+
+            for det in results:
+                det["scene_low_light"] = bool(profile["is_low_light"])
+                det["scene_very_dark"] = bool(profile["is_very_dark"])
+                det["scene_v_mean"] = float(profile["v_mean"])
+            return results
+
+        # Legacy YOLO11 path (kept for backward compatibility)
         profile = self._scene_profile(bgr_frame)
         variants = self._make_inference_variants(bgr_frame, profile)
         score_threshold = self.low_light_conf_thresh if profile["is_low_light"] else self.conf_thresh
@@ -238,23 +310,35 @@ class YOLOv11ONNX:
         return merged
 
     def infer_multi_frame(self, frames: list[np.ndarray]) -> list[dict]:
+        all_detections = []
+        for frame in frames:
+            if frame is None:
+                continue
+            dets = self.infer(frame)
+            all_detections.extend(dets)
+
+        if not all_detections or self._nms_free:
+            # YOLO26 NMS-free: each frame's detections are already NMS'd.
+            # Just merge across frames with simple bbox-based dedup.
+            if not all_detections:
+                return []
+            return self._deduplicate_cross_frame(all_detections)
+
+        # Legacy YOLO11 path: cross-frame NMS
         all_boxes = []
         all_scores = []
         all_class_ids = []
         all_names = []
         all_variants = []
         low_light_scores = []
-        for frame in frames:
-            if frame is None:
-                continue
-            for detection in self.infer(frame):
-                x1, y1, x2, y2 = detection["bbox"]
-                all_boxes.append([x1, y1, x2 - x1, y2 - y1])
-                all_scores.append(detection["confidence"])
-                all_class_ids.append(detection["class_id"])
-                all_names.append(detection["class_name"])
-                all_variants.append(detection.get("variant", "base"))
-                low_light_scores.append(bool(detection.get("scene_low_light", False)))
+        for det in all_detections:
+            x1, y1, x2, y2 = det["bbox"]
+            all_boxes.append([x1, y1, x2 - x1, y2 - y1])
+            all_scores.append(det["confidence"])
+            all_class_ids.append(det["class_id"])
+            all_names.append(det["class_name"])
+            all_variants.append(det.get("variant", "base"))
+            low_light_scores.append(bool(det.get("scene_low_light", False)))
         if not all_boxes:
             return []
 
@@ -283,3 +367,42 @@ class YOLOv11ONNX:
                 }
             )
         return merged
+
+    def _deduplicate_cross_frame(self, detections: list[dict]) -> list[dict]:
+        """
+        For YOLO26 NMS-free: merge detections from multiple frames.
+        If the same class appears at roughly the same location (IoU > 0.5),
+        keep the highest confidence one.
+        """
+        if not detections:
+            return []
+
+        # Sort by confidence descending
+        detections.sort(key=lambda d: d["confidence"], reverse=True)
+        kept = []
+
+        for det in detections:
+            is_duplicate = False
+            for existing in kept:
+                if det["class_id"] != existing["class_id"]:
+                    continue
+                iou = self._compute_iou(det["bbox"], existing["bbox"])
+                if iou > 0.5:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                kept.append(det)
+
+        return kept
+
+    @staticmethod
+    def _compute_iou(box1: tuple, box2: tuple) -> float:
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = area1 + area2 - inter
+        return inter / union if union > 0 else 0.0

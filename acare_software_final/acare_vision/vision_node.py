@@ -59,7 +59,7 @@ from .localiser import Localiser
 from .hand_tracker import HandTracker
 from .hp60c_camera_node import HP60CCameraNode
 
-MODEL_PATH = str(MODEL_DIR / 'yolo_acare.onnx')
+MODEL_PATH = str(MODEL_DIR / 'acare_v26.onnx')
 CONF_THRESH = 0.70
 
 
