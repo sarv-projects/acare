@@ -99,4 +99,4 @@ auth:
   enrol_voice_samples: 3
   enrol_face_frames:   10
 
-demo_mode: false
+demo_mode: true
