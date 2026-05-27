@@ -6,11 +6,31 @@ from .fast_intent import parse_fast_intent, is_simple_command
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not found in .env file")
 
-client = Groq(api_key=GROQ_API_KEY)
+def _get_groq_client() -> Groq:
+    """Lazy Groq client — defer the API key check until first call.
+
+    Importing this module no longer raises if ``GROQ_API_KEY`` is missing,
+    so other voice modules and ROS nodes can import :func:`parse_intent`
+    without crashing the launch when the key is absent.
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY not set. Add it to .env or the environment before "
+            "calling parse_intent()."
+        )
+    return Groq(api_key=api_key)
+
+
+_client_cache: Groq | None = None
+
+
+def _client() -> Groq:
+    global _client_cache
+    if _client_cache is None:
+        _client_cache = _get_groq_client()
+    return _client_cache
 
 VALID_TOOLS = ["cream", "scissors", "forceps", "thermometer", "oximeter", "plaster"]
 
@@ -39,7 +59,7 @@ def parse_intent(transcript, last_tool=None):
             return fast_result
 
     try:
-        response = client.chat.completions.create(
+        response = _client().chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},

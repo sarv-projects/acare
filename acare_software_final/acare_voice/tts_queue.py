@@ -43,11 +43,33 @@ class TTSQueue:
         self._tts_loop = None
         self._tts_loop_ready = threading.Event()
 
+        # Optional pre-rendered cache of common phrases. Falls back to a
+        # no-op if the cache module fails to import (e.g. edge_tts missing
+        # on a CI box).
+        self._cache = self._build_cache()
+
         self._processor_thread = threading.Thread(target=self._process_queue, daemon=True)
         self._processor_thread.start()
 
         self._barge_thread = threading.Thread(target=self._monitor_barge_in, daemon=True)
         self._barge_thread.start()
+
+    def _build_cache(self):
+        try:
+            from .tts_cache import TTSCache
+            return TTSCache(capacity=50, preload=False)
+        except Exception as exc:
+            print(f"[TTSQueue] tts_cache disabled: {exc}")
+            return None
+
+    def _try_play_from_cache(self, text: str) -> bool:
+        if self._cache is None:
+            return False
+        try:
+            return bool(self._cache.play_cached(text))
+        except Exception as exc:
+            print(f"[TTSQueue] cache lookup error: {exc}")
+            return False
 
     def _init_pygame(self):
         if not self._pygame_init:
@@ -212,10 +234,13 @@ class TTSQueue:
                     self._speak_pyttsx3(text)
                 else:
                     # Spec Section VIII fallback chain:
+                    #   0. Pre-rendered cache (zero network latency for common phrases)
                     #   1. Edge TTS (normal, Indian English, cloud)
                     #   2. Kokoro ONNX (offline fallback, local)
                     #   3. pyttsx3 (emergency fallback, always works)
-                    if not self._speak_edge_tts(text):
+                    if self._try_play_from_cache(text):
+                        pass
+                    elif not self._speak_edge_tts(text):
                         print("[TTSQueue] Edge TTS failed — trying Kokoro offline fallback")
                         if not self._speak_kokoro(text):
                             print("[TTSQueue] Kokoro failed — falling back to pyttsx3")

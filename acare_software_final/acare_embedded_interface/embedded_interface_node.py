@@ -54,6 +54,12 @@ class EmbeddedInterfaceNode(Node):
     def _is_allowed_logged_out_arm_command(self, msg: ArmCommand) -> bool:
         if msg.command != "MOVE":
             return False
+        # Joint-mode commands match against the kiosk poses directly.
+        # Cartesian-mode commands are never permitted while LOGGED_OUT —
+        # only the kiosk rest/interaction joint moves are.
+        mode = (getattr(msg, "mode", "") or "JOINT").upper()
+        if mode != "JOINT":
+            return False
         if not self._joint_pose_matches(msg.joint_angles, self._kiosk_rest_pose) and not self._joint_pose_matches(msg.joint_angles, self._kiosk_interaction_pose):
             return False
         if float(msg.velocity_scale) > self._kiosk_velocity_scale + 1e-6:
@@ -90,6 +96,25 @@ class EmbeddedInterfaceNode(Node):
             self.get_logger().warn("Rejected non-kiosk arm command while LOGGED_OUT")
             self._publish_feedback(False, f"arm_{msg.command.lower()}", "logged_out_pose_guard")
             return
+
+        # Validate the command shape so a missing IK solution doesn't quietly
+        # turn into a zero-length move on real hardware.
+        mode = (getattr(msg, "mode", "") or "JOINT").upper()
+        pose = list(getattr(msg, "pose", []) or [])
+        joint_angles = list(msg.joint_angles or [])
+        if mode == "JOINT" and len(joint_angles) != 6:
+            self.get_logger().warn(
+                f"Joint-mode arm command needs 6 joint angles, got {len(joint_angles)}"
+            )
+            self._publish_feedback(False, f"arm_{msg.command.lower()}", "invalid_joint_angles")
+            return
+        if mode == "CARTESIAN" and len(pose) != 6:
+            self.get_logger().warn(
+                f"Cartesian-mode arm command needs a 6-vector pose, got {len(pose)}"
+            )
+            self._publish_feedback(False, f"arm_{msg.command.lower()}", "invalid_cartesian_pose")
+            return
+
         threading.Thread(
             target=self._simulate_motion,
             args=(f"arm_{msg.command.lower()}", 0.7 if msg.blocking else 0.1),

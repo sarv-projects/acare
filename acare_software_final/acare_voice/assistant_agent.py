@@ -5,11 +5,22 @@ from typing import List, Dict
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not found in .env file")
 
-client = Groq(api_key=GROQ_API_KEY)
+def _get_groq_client() -> Groq:
+    """Lazy Groq client — defer the API key check until the first request.
+
+    Importing this module no longer raises if ``GROQ_API_KEY`` is missing.
+    The previous module-level check meant a single missing env var crashed
+    the entire ROS launch, including unrelated nodes that imported
+    :mod:`acare_voice.assistant_agent` only transitively.
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY not set. Add it to .env or the environment before "
+            "calling AssistantAgent.get_response()."
+        )
+    return Groq(api_key=api_key)
 
 # Spec Reference: Section X (Conversational Layer — Assistant Agent, LOGGED_OUT mode)
 #
@@ -72,6 +83,12 @@ class AssistantAgent:
     def __init__(self):
         self.conversation_history: List[Dict[str, str]] = []
         self.max_turns = 20
+        self._client: Groq | None = None
+
+    def _client_or_raise(self) -> Groq:
+        if self._client is None:
+            self._client = _get_groq_client()
+        return self._client
 
     def reset_conversation(self):
         self.conversation_history = []
@@ -121,7 +138,7 @@ class AssistantAgent:
         ] + self.conversation_history
 
         try:
-            completion = client.chat.completions.create(
+            completion = self._client_or_raise().chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=messages,
                 # 0.65 gives natural phrasing variation without going off-script.

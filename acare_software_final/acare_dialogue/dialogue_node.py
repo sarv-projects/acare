@@ -89,13 +89,28 @@ class DialogueNode(Node):
             self._memory.current_task = {"tool": msg.tool, "status": "vision_found"}
 
     def _resolve_pronoun(self, text: str) -> str | None:
+        """Resolve ``it``/``that``/``smaller``/``bigger`` references to a tool.
+
+        H1 fix: use word-boundary matching so substrings inside other
+        words (``kit``, ``split``, ``thermometer``) don't accidentally
+        trigger pronoun resolution. The previous ``"it" in lowered``
+        check would match ``"give me the kit"`` and resolve to the last
+        fetched tool instead of failing through to normal parsing.
+        """
+        import re
+
         lowered = text.lower()
-        if "it" in lowered or "that" in lowered:
+
+        def has_word(*words: str) -> bool:
+            pattern = r"\b(" + "|".join(re.escape(w) for w in words) + r")\b"
+            return re.search(pattern, lowered) is not None
+
+        if has_word("it", "that", "this", "one"):
             if self._memory.current_task.get("tool"):
                 return self._memory.current_task["tool"]
             if self._memory.tools_fetched:
                 return self._memory.tools_fetched[-1]["tool"]
-        if "smaller" in lowered or "bigger" in lowered:
+        if has_word("smaller", "bigger"):
             if self._memory.last_ambiguous_tools:
                 return self._memory.last_ambiguous_tools[0]
         return None

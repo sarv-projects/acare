@@ -1,5 +1,6 @@
 import threading
 import asyncio
+import itertools
 import numpy as np
 import time
 import inspect
@@ -12,29 +13,47 @@ from deepgram.clients.live.v1 import LiveTranscriptionEvents, LiveOptions
 
 load_dotenv()
 
+
 def _require_env_str(key: str) -> str:
     value = os.getenv(key)
     if not value:
-        raise ValueError(f"{key} not found in .env file")
+        raise RuntimeError(
+            f"{key} is not set. Add it to .env or export it before instantiating "
+            "ASRClient."
+        )
     return value
 
-DEEPGRAM_API_KEY: str = _require_env_str("DEEPGRAM_API_KEY")
+
+# C4: defer the DEEPGRAM_API_KEY lookup until the client is actually
+# instantiated. The previous module-level resolution meant importing this
+# file (which voice_ros_node and the standalone voice_node both do) raised
+# on missing env vars and aborted the whole ROS graph.
 
 SAMPLE_RATE = 16000
+
 
 class ASRClient:
     MAX_RECONNECT_ATTEMPTS = 3
     RECONNECT_BACKOFFS = [0.5, 1.0, 2.0]   # seconds — spec Section IX
 
+    # Monotonic counter used to identify keepalive threads. Each call to
+    # ``start_keepalive`` increments the generation; only the keepalive
+    # thread whose generation matches ``_keepalive_generation`` keeps
+    # running. Any older thread (e.g. one that survived a reconnect)
+    # exits its loop the next time it wakes up, eliminating the
+    # double-keepalive leak (C6).
+    _keepalive_seq = itertools.count(1)
+
     def __init__(self, on_transcript, keyword_monitor=None):
         self.on_transcript = on_transcript
         self.keyword_monitor = keyword_monitor
-        self.client = DeepgramClient(DEEPGRAM_API_KEY)
+        self.client = DeepgramClient(_require_env_str("DEEPGRAM_API_KEY"))
         self.connection: Any = None
         self.loop = None
         self._ready = threading.Event()
         self.keepalive_active = False
         self.keepalive_thread = None
+        self._keepalive_generation = 0
         self._last_final_text = ""
         self._last_final_at = 0.0
         self._connection_died = False
@@ -177,14 +196,30 @@ class ASRClient:
         Sends silent audio to Deepgram every 1.0 seconds.
         Prevents timeout when audio streaming is paused (e.g., during TTS).
         On consecutive send failures, triggers reconnect logic.
+
+        C6 fix: each call bumps ``_keepalive_generation``. The newly
+        spawned thread captures its own generation id and exits as soon
+        as a newer generation is started, so reconnects can never leave
+        an orphaned keepalive thread silently spamming the SDK.
         """
-        def keepalive_loop():
+        my_generation = next(self._keepalive_seq)
+        self._keepalive_generation = my_generation
+        self.keepalive_active = True
+
+        def keepalive_loop(generation: int = my_generation):
             silence = np.zeros(512, dtype=np.int16).tobytes()
             consecutive_failures = 0
-            while self.keepalive_active:
+            while (
+                self.keepalive_active
+                and self._keepalive_generation == generation
+            ):
                 if not self._send_to_deepgram_safe(silence):
                     consecutive_failures += 1
-                    if consecutive_failures >= 3 and not self._connection_died and not self._reconnecting:
+                    if (
+                        consecutive_failures >= 3
+                        and not self._connection_died
+                        and not self._reconnecting
+                    ):
                         self._connection_died = True
                         print("[ASR] Deepgram keepalive failed — triggering reconnect.")
                         self._reconnect_in_background()
@@ -192,12 +227,14 @@ class ASRClient:
                     consecutive_failures = 0
                 time.sleep(1.0)
 
-        self.keepalive_active = True
         self.keepalive_thread = threading.Thread(target=keepalive_loop, daemon=True)
         self.keepalive_thread.start()
 
     def stop_keepalive(self):
         self.keepalive_active = False
+        # Bump the generation so any in-flight keepalive thread exits even
+        # if a subsequent reconnect re-asserts ``keepalive_active``.
+        self._keepalive_generation = next(self._keepalive_seq)
 
     async def _on_transcript(self, self2, result, **kwargs):
         sentence = ""

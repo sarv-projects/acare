@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,8 +28,9 @@ from acare_msgs.msg import (
     VisionStatus,
 )
 
-from .ik_solver import IKSolver
+from .ik_solver import IKSolver, cartesian_pose
 from .agentic_planner import AgenticPlanner
+from .handover_fsm import HandoverSubstate, HandoverSubstateMachine
 from .agent_schema import (
     AbortCommand,
     ArmMoveCommand,
@@ -95,6 +97,14 @@ class PlannerNode(Node):
         self.gripper_pub    = self.create_publisher(GripperCommand,      "/gripper_command",       TOPIC_COMMAND)
         self.tts_pub        = self.create_publisher(String,              "/tts_request",           TOPIC_TTS)
         self.log_pub        = self.create_publisher(LogEvent,            "/log_event",             TOPIC_LOGGING)
+        # Handover substate is published as a structured String so log_node
+        # and admin tools can reconstruct the multi-modal verification
+        # timeline without parsing free-text logs.
+        self.handover_substate_pub = self.create_publisher(String, "/handover_substate", TOPIC_STATE)
+        self._handover_fsm = HandoverSubstateMachine(
+            publish=lambda s: self.handover_substate_pub.publish(String(data=s)),
+            logger=self.get_logger(),
+        )
 
         # Subscribers — QoS per spec Section V
         self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, TOPIC_VOICE_PIPELINE)
@@ -266,7 +276,9 @@ class PlannerNode(Node):
     def _send_joint_pose(self, joint_angles: list[float], velocity_scale: float, accel_limit: float) -> bool:
         cmd = ArmCommand()
         cmd.command = "MOVE"
+        cmd.mode = "JOINT"
         cmd.joint_angles = [float(v) for v in joint_angles]
+        cmd.pose = []
         cmd.velocity_scale = min(float(velocity_scale), self.safe_limits.max_command_velocity_scale)
         cmd.accel_limit = min(float(accel_limit), self.safe_limits.max_command_accel_limit)
         cmd.blocking = True
@@ -293,6 +305,49 @@ class PlannerNode(Node):
                 daemon=True,
             )
             self._task_thread.start()
+
+    def _ensure_state(self, target: str, reason: str, allowed_from: set[str]) -> bool:
+        """Drive the global FSM through any prerequisite states needed to reach ``target``.
+
+        validated_intent typically arrives while the global FSM is still in
+        STANDBY (the user's first command after login). PROCESSING is only
+        legal from LISTENING, so the planner has to step through
+        STANDBY -> LISTENING -> PROCESSING. This helper hides that pathing
+        and waits for /robot_state confirmations between steps so we never
+        publish a motion command while state_manager is still on a stale
+        state.
+        """
+        path_to: dict[str, list[str]] = {
+            "PROCESSING": ["LISTENING", "PROCESSING"],
+            "EXECUTING":  ["EXECUTING"],
+            "HOLDING":    ["HOLDING"],
+            "HANDOVER":   ["HANDOVER"],
+            "STANDBY":    ["STANDBY"],
+            "ESTOP":      ["ESTOP"],
+        }
+        steps = path_to.get(target, [target])
+
+        for idx, step in enumerate(steps):
+            current = self.world.robot_state
+            if current == step:
+                continue
+            if idx == 0 and current not in allowed_from and current != step:
+                self.get_logger().warn(
+                    f"_ensure_state: refusing transition from {current} to {target}"
+                )
+                return False
+            self._transition_state(step, reason if step == target else f"{reason}_step")
+            for _ in range(20):
+                if self.world.robot_state == step:
+                    break
+                time.sleep(0.05)
+            if self.world.robot_state != step:
+                self.get_logger().warn(
+                    f"_ensure_state: timeout waiting for {step} "
+                    f"(still in {self.world.robot_state})"
+                )
+                return False
+        return True
 
     def _on_vision_result(self, msg: VisionResult):
         self._latest_vision_result = msg
@@ -336,9 +391,13 @@ class PlannerNode(Node):
             self._schedule_return_to_rest()
         if word in {"take", "yes", "got it", "ok", "okay"}:
             self._voice_confirm_word = word
-        elif word == "lower":
+        # H2: only honour height adjustments while we are actually in the
+        # HANDOVER substate. Outside it, "lower"/"higher" might be the user
+        # saying something completely unrelated and silently mutating the
+        # offset would carry across sessions.
+        elif word == "lower" and self.world.robot_state == "HANDOVER":
             self._handover_height_adjustment -= 0.05
-        elif word == "higher":
+        elif word == "higher" and self.world.robot_state == "HANDOVER":
             self._handover_height_adjustment += 0.05
 
     def _on_vision_status(self, msg: VisionStatus):
@@ -366,13 +425,25 @@ class PlannerNode(Node):
                 self._abort_task("System not ready for task execution.")
                 return
 
-            self._transition_state("PROCESSING", f"processing_{tool}")
+            if not self._ensure_state(
+                "PROCESSING",
+                f"processing_{tool}",
+                allowed_from={"STANDBY", "LISTENING", "PROCESSING"},
+            ):
+                self._abort_task("Cannot start task: robot is not in a ready state.")
+                return
             self._send_gripper_open()
             if not self._phase_vision_search(tool, user_id):
                 self._abort_task(f"Cannot locate {tool}. Can you confirm it is on the tray?")
                 return
 
-            self._transition_state("EXECUTING", f"executing_{tool}")
+            if not self._ensure_state(
+                "EXECUTING",
+                f"executing_{tool}",
+                allowed_from={"PROCESSING"},
+            ):
+                self._abort_task("Cannot proceed: state machine refused EXECUTING.")
+                return
             if not self._phase_grasp(tool):
                 self._abort_task(f"Unable to grasp {tool}. Please reposition it.")
                 return
@@ -436,6 +507,14 @@ class PlannerNode(Node):
                     action = "RETRY_UNIFORM_SEARCH"
                     reset_map = (attempt == MAX_RETRIES)
                     priority_zones = []
+
+                # H3: respect an explicit abort proposal so we don't keep
+                # searching forever after the LLM has already given up.
+                if action == "ABORT_TOOL_NOT_FOUND":
+                    self.get_logger().info(
+                        f"Vision recovery requested ABORT_TOOL_NOT_FOUND on attempt {attempt}"
+                    )
+                    return False
 
                 if validated and validated.action.value == "ASK_USER_CONFIRM_LOCATION":
                     time.sleep(5.0)
@@ -556,8 +635,20 @@ class PlannerNode(Node):
         - Dynamic palm tracking (incremental approach toward /hand_status x,y,z)
         - Voice confirmation
         - Safety-validated release gate
+
+        Substate progression is published to /handover_substate via
+        :class:`HandoverSubstateMachine` so log_node, admin tools, and
+        replay harnesses can reconstruct the multi-modal verification
+        timeline.
         """
+        self._handover_fsm.reset()
+        self._handover_fsm.to_approaching(reason=f"tool:{tool}")
         self._transition_state("HOLDING", f"move_to_handover_{tool}")
+
+        # Reset per-handover height adjustment. The previous implementation
+        # let it accumulate across sessions because it lived on the node
+        # rather than the TaskContext.
+        self._handover_height_adjustment = 0.0
 
         # Get handover pose with learned user Z-offset
         z_offset = self.agentic.get_handover_z_offset(user_id)
@@ -567,9 +658,11 @@ class PlannerNode(Node):
             self._handover_zone[2] + z_offset + self._handover_height_adjustment,
         )
         if not self._send_arm_move(handover_pose, velocity_scale=self._velocity_scale() * 0.6):
+            self._handover_fsm.to_aborted("approach_failed")
             return False
 
         self._transition_state("HANDOVER", f"handover_{tool}")
+        self._handover_fsm.to_face_verify(reason=f"face_verify_{user_id}")
         self._speak(f"{tool} ready. Please face the camera.")
         self._auth_face_event.clear()
         self._voice_confirm_word = ""
@@ -628,9 +721,11 @@ class PlannerNode(Node):
                 )
 
         if (time.monotonic() - handover_start) > HANDOVER_TIMEOUT_S:
+            self._handover_fsm.to_aborted("face_verify_timeout")
             return False
 
         # --- SUBSTATE 2: HAND_DETECT + DYNAMIC PALM TRACKING ---
+        self._handover_fsm.to_hand_detect(reason="face_ok")
         self._speak("Please place your open palm under the gripper.")
         hand_ok = self._wait_for_hand_detect_with_tracking(
             current_arm_pos=(handover_pose[0], handover_pose[1], current_z),
@@ -643,19 +738,25 @@ class PlannerNode(Node):
                 timeout=8.0,
             )
         if not hand_ok:
+            self._handover_fsm.to_aborted("hand_detect_timeout")
             return False
 
         # --- SUBSTATE 3: VOICE_CONFIRM ---
+        self._handover_fsm.to_voice_confirm(reason="hand_ok")
         self._speak("Say take to receive.")
         if not self._wait_for_voice_confirm(user_id, timeout=5.0):
             self._speak("Say take to receive.")
             if not self._wait_for_voice_confirm(user_id, timeout=5.0):
+                self._handover_fsm.to_aborted("voice_confirm_timeout")
                 return False
 
         # --- RELEASE GATE ---
         if not self._validate_release():
             self._speak("Handover verification failed. Returning tool to tray.")
+            self._handover_fsm.to_aborted("release_validation_failed")
             return False
+
+        self._handover_fsm.to_releasing(reason="all_checks_passed")
 
         if self._face_skipped:
             self._log_event("FACE_VERIFY_SKIPPED", tool=tool,
@@ -668,6 +769,7 @@ class PlannerNode(Node):
 
         self._send_gripper_release()
         self.world.arm_holding = False
+        self._handover_fsm.to_complete(reason="gripper_released")
         return True
 
     def _wait_for_hand_detect_with_tracking(
@@ -783,13 +885,37 @@ class PlannerNode(Node):
         )
         self._current_named_pose = ""
         self.context.motion_start = time.monotonic()
-        q = self.ik.solve_grasp((validated.x, validated.y, validated.z))
+
+        # B1: try real IK. If we have no calibrated solver, publish in
+        # CARTESIAN mode and let the embedded layer (Teensy firmware in
+        # production, simulator in dev) handle the final motion. Never
+        # fabricate joint angles equal to the cartesian XYZ — that bug
+        # would have driven joint 1 to ``x`` radians, joint 2 to ``y``
+        # radians and so on, with no kinematic relation to the target.
+        rotation_rad = math.radians(validated.rotation_offset_deg)
+        target_xyz = (validated.x, validated.y, validated.z)
+        joint_angles = self.ik.solve_grasp(target_xyz)
+
         cmd = ArmCommand()
         cmd.command = "MOVE"
-        cmd.joint_angles = [float(v) for v in q]
         cmd.velocity_scale = validated.velocity_scale
         cmd.accel_limit = self.safe_limits.max_command_accel_limit
         cmd.blocking = True
+
+        if joint_angles is not None and len(joint_angles) == 6:
+            cmd.mode = "JOINT"
+            cmd.joint_angles = [float(v) for v in joint_angles]
+            cmd.pose = cartesian_pose(target_xyz, (0.0, 0.0, rotation_rad))
+        else:
+            cmd.mode = "CARTESIAN"
+            cmd.joint_angles = []
+            cmd.pose = cartesian_pose(target_xyz, (0.0, 0.0, rotation_rad))
+            if self.ik.has_solver is False and not getattr(self, "_ik_warning_logged", False):
+                self.get_logger().warn(
+                    f"IKSolver: {self.ik.status}; publishing cartesian-mode arm commands"
+                )
+                self._ik_warning_logged = True
+
         self._motion_event.clear()
         self.arm_pub.publish(cmd)
         if not self._motion_event.wait(timeout=15.0):

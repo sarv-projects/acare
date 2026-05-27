@@ -20,6 +20,7 @@ from .face_detect import PassiveFaceDetector
 from .storage import UserStore
 from .verify_face import FaceVerifier
 from .verify_voice import VoiceVerifier
+from .auth_flow import AuthFlowStateMachine
 
 
 @dataclass
@@ -68,6 +69,11 @@ class AuthNode(Node):
         self.auth_pub = self.create_publisher(AuthResult, "/auth_result", 10)
         self.tts_pub = self.create_publisher(String, "/tts_request", 10)
         self.transition_pub = self.create_publisher(StateTransition, "/state_transition", 10)
+        self.auth_flow_pub = self.create_publisher(String, "/auth_flow_state", 10)
+        self._auth_flow = AuthFlowStateMachine(
+            publish=lambda s: self.auth_flow_pub.publish(String(data=s)),
+            logger=self.get_logger(),
+        )
         self.create_subscription(Intent, "/intent_result", self._on_intent, 10, callback_group=self._io_group)
         self.create_subscription(AuthRequest, "/auth_request", self._on_auth_request, 10, callback_group=self._io_group)
         self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, 10, callback_group=self._io_group)
@@ -137,6 +143,44 @@ class AuthNode(Node):
         except Exception:
             return {}
 
+    @staticmethod
+    def _image_msg_to_array(msg: Image) -> np.ndarray | None:
+        """Decode a sensor_msgs/Image into an HxWxC numpy array.
+
+        The previous implementation used
+        ``np.frombuffer(msg.data, ...).reshape(h, w, -1)`` which silently
+        broke when the publisher used a stride larger than ``width *
+        channels`` (any padded/aligned camera driver). This helper
+        respects ``msg.step`` and trims the per-row padding before
+        reshaping. Supports BGR8/RGB8 only — the HP60C node publishes
+        either of those.
+        """
+        if msg is None or not msg.data:
+            return None
+        encoding = (msg.encoding or "").lower()
+        if encoding in ("bgr8", "rgb8"):
+            channels = 3
+        elif encoding in ("mono8",):
+            channels = 1
+        else:
+            # Fall back to channel inference. Anything else (depth, yuyv,
+            # etc.) is not supported by the auth pipeline.
+            return None
+
+        width = int(msg.width)
+        height = int(msg.height)
+        step = int(msg.step) if msg.step else width * channels
+        expected_row = width * channels
+        if step < expected_row:
+            return None
+
+        flat = np.frombuffer(msg.data, dtype=np.uint8)
+        if flat.size < step * height:
+            return None
+        rows = flat[: step * height].reshape(height, step)
+        # Trim per-row padding then reshape into HxWxC.
+        return rows[:, :expected_row].reshape(height, width, channels).copy()
+
     def _publish_tts(self, text: str):
         self.tts_pub.publish(String(data=text))
 
@@ -195,6 +239,7 @@ class AuthNode(Node):
         self._last_voice_check_ok = True
         self._last_voice_check_confidence = 0.0
         self._last_voice_check_at = 0.0
+        self._auth_flow.reset(reason="logout")
         if publish_transition:
             self._transition_state("LOGGED_OUT", "auth_logout")
 
@@ -253,6 +298,8 @@ class AuthNode(Node):
             created_at=time.monotonic(),
         )
         self._last_prompted_user_id = user.user_id
+        self._auth_flow.to_detection(reason=f"face_present_{user.user_id}")
+        self._auth_flow.to_greeting(reason=f"welcome_{user.name}")
         self._maybe_prompt(f"Welcome {user.name}. Say confirm to log in.")
 
     def _handover_face_check(self):
@@ -364,7 +411,10 @@ class AuthNode(Node):
 
     def _on_rgb(self, msg: Image):
         try:
-            arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
+            arr = self._image_msg_to_array(msg)
+            if arr is None:
+                self._latest_rgb = None
+                return
             self._latest_rgb = arr.copy()
             self._last_face_seen_at = time.monotonic()
         except Exception:
@@ -452,6 +502,7 @@ class AuthNode(Node):
                 response.message = "Another enrolment is already in progress."
                 return response
             self._pending_enrolment = pending
+        self._auth_flow.to_enrolment(reason=f"enrol_{name}")
 
         if face_target and voice_target:
             prompt = f"Starting enrolment for {name}. Please face the camera and say {voice_target} short phrases clearly."
@@ -591,12 +642,14 @@ class AuthNode(Node):
             pending = self._pending_login
             user = self.store.get(pending.user_id)
             voice_conf = 0.99 if self._demo_mode else 0.0
+            self._auth_flow.to_verification(reason=f"confirm_{pending.user_id}")
             if user is not None and self.voice_verifier.available:
                 audio_tensor = self._transcript_to_audio_tensor(msg)
                 if user.voice_emb is not None and audio_tensor is not None:
                     ok, voice_conf = self.voice_verifier.verify(audio_tensor, user.voice_emb)
                     if not ok:
                         self._pending_login = pending
+                        self._auth_flow.to_failure(reason="voice_mismatch")
                         self._publish_tts("Identity not recognised. Please contact admin.")
                         return
                 elif user.voice_emb is not None and audio_tensor is None and not self._demo_mode:
@@ -608,6 +661,7 @@ class AuthNode(Node):
                         voice_conf = 0.85
             self._pending_login = None
             self._activate_session(pending.user_id, pending.name, pending.role)
+            self._auth_flow.to_session(reason=f"login_{pending.user_id}")
             self._publish_auth(
                 True,
                 pending.user_id,

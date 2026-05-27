@@ -104,6 +104,12 @@ class HandTracker:
         """
         Processes one RGB+depth frame pair and returns a HandStatus message.
 
+        The argument is named ``rgb_frame`` for historical reasons but the
+        HP60C camera node publishes BGR8. We normalise to RGB before
+        handing the frame to MediaPipe — the previous implementation fed
+        BGR to ``Hands.process`` which silently degraded landmark
+        accuracy because MediaPipe expects RGB.
+
         Detection logic:
           hand_detected — MediaPipe found at least one hand
           is_open       — 3 or more fingers are extended (tip y < PIP y in image coords)
@@ -124,7 +130,13 @@ class HandTracker:
         if not MEDIAPIPE_AVAILABLE or self._hands is None:
             return msg
 
-        results = self._hands.process(rgb_frame)
+        # D2 fix: swap BGR -> RGB before MediaPipe inference.
+        if rgb_frame.ndim == 3 and rgb_frame.shape[2] == 3:
+            rgb_input = np.ascontiguousarray(rgb_frame[:, :, ::-1])
+        else:
+            rgb_input = rgb_frame
+
+        results = self._hands.process(rgb_input)
         if not results.multi_hand_landmarks:
             return msg
 
