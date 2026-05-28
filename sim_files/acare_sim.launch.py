@@ -166,6 +166,25 @@ def generate_launch_description():
         parameters=[{"use_sim_time": True}],
     )
 
+    # Dialogue Node — Groq-backed intent parser for /raw_transcript → /intent_result
+    # Also drives the LOGGED_OUT conversational agent.
+    dialogue_node = Node(
+        package="acare_dialogue",
+        executable="dialogue_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
+    # Embedded Interface — bridges /arm_command → Gazebo's
+    # /arm_controller/follow_joint_trajectory action. Without this the arm
+    # cannot move in simulation.
+    embedded_interface = Node(
+        package="acare_embedded_interface",
+        executable="interface_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
     # Voice Node — VAD/ASR/TTS/Intent pipeline
     voice_node = Node(
         package="acare_voice",
@@ -216,7 +235,7 @@ def generate_launch_description():
 
         # Layer 4: ACARE nodes (after 6s — they need /robot_description)
         TimerAction(period=6.0, actions=[state_manager, safety_node, log_node, auth_node]),
-        TimerAction(period=8.0, actions=[planner_node]),
+        TimerAction(period=8.0, actions=[planner_node, dialogue_node, embedded_interface]),
         TimerAction(period=14.0, actions=[voice_node]),  # voice last — needs API connections
 
         # Layer 5: RViz (after 12s)

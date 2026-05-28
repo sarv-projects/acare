@@ -48,7 +48,7 @@ pip3 install --break-system-packages \
 
 # 3. Sync ACARE source packages from Windows mount into WS
 echo "[3/8] Syncing ACARE packages..."
-for pkg in acare_bringup acare_msgs acare_planner acare_safety acare_logging acare_vision acare_voice acare_auth; do
+for pkg in acare_bringup acare_msgs acare_planner acare_safety acare_logging acare_vision acare_voice acare_auth acare_dialogue acare_embedded_interface acare_admin; do
     if [ -d "$ACARE_SRC/$pkg" ]; then
         rm -rf "$WS/src/$pkg"
         mkdir -p "$WS/src/$pkg"
@@ -102,11 +102,11 @@ fi
 echo "[8/8] Rebuilding workspace..."
 source /opt/ros/jazzy/setup.bash
 cd "$WS"
-rm -rf build/acare_voice build/acare_planner build/acare_safety build/acare_logging build/acare_vision build/acare_bringup build/acare_msgs build/acare_auth
-rm -rf install/acare_voice install/acare_planner install/acare_safety install/acare_logging install/acare_vision install/acare_bringup install/acare_msgs install/acare_auth
+rm -rf build/acare_voice build/acare_planner build/acare_safety build/acare_logging build/acare_vision build/acare_bringup build/acare_msgs build/acare_auth build/acare_dialogue build/acare_embedded_interface build/acare_admin
+rm -rf install/acare_voice install/acare_planner install/acare_safety install/acare_logging install/acare_vision install/acare_bringup install/acare_msgs install/acare_auth install/acare_dialogue install/acare_embedded_interface install/acare_admin
 
 colcon build --merge-install \
-    --packages-select acare_msgs acare_bringup acare_planner acare_safety acare_logging acare_vision acare_voice acare_auth \
+    --packages-select acare_msgs acare_bringup acare_planner acare_safety acare_logging acare_vision acare_voice acare_auth acare_dialogue acare_embedded_interface acare_admin \
     2>&1 | tail -25
 
 echo ""

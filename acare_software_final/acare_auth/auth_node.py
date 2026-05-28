@@ -79,6 +79,15 @@ class AuthNode(Node):
             10,
             callback_group=self._io_group,
         )
+        # Gazebo bridge publishes RGB as /camera/rgb — accept both so the same
+        # auth_node code works on real hardware (HP60C) and in simulation.
+        self.create_subscription(
+            Image,
+            "/camera/rgb",
+            self._on_rgb,
+            10,
+            callback_group=self._io_group,
+        )
         self.create_service(EnrolStaff, "/enrol_staff", self._on_enrol, callback_group=self._io_group)
 
         self.store = UserStore()
@@ -235,6 +244,38 @@ class AuthNode(Node):
             return
         if self._active_user_id:
             return
+
+        # Demo mode: don't require a camera frame. If at least one user is
+        # enrolled, auto-prompt them. If none are enrolled, auto-create a
+        # default demo user so the pipeline can be exercised end-to-end.
+        if self._demo_mode:
+            users = self.store.all_active()
+            if not users:
+                try:
+                    self.store.enrol(
+                        name="Demo User",
+                        role="surgeon",
+                        voice_emb=None,
+                        face_emb=None,
+                    )
+                    users = self.store.all_active()
+                except Exception as exc:
+                    self.get_logger().warn(f"Demo auto-enrol failed: {exc}")
+                    return
+            if not users:
+                return
+            user = users[-1]
+            self._pending_login = PendingLogin(
+                user_id=user.user_id,
+                name=user.name,
+                role=user.role,
+                face_confidence=0.99,
+                created_at=time.monotonic(),
+            )
+            self._last_prompted_user_id = user.user_id
+            self._maybe_prompt(f"Welcome {user.name}. Say confirm to log in.")
+            return
+
         if self._latest_rgb is None:
             return
 

@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE admin package",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "admin_node = acare_admin.admin_node:main",

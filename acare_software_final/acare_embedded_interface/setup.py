@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE embedded interface node",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "interface_node = acare_embedded_interface.embedded_interface_node:main",
