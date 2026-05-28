@@ -46,6 +46,11 @@ if [ -z "$DEEPGRAM_API_KEY" ] || [ -z "$GROQ_API_KEY" ]; then
     echo ""
 fi
 
+if [ -z "$NVIDIA_NIM_API_KEY" ]; then
+    echo "[INFO] NVIDIA_NIM_API_KEY not set — agentic planner will use Groq fallback."
+    echo ""
+fi
+
 # --- Launch the full simulation in one ros2 launch invocation ---
 # (Voice node is included in acare_sim.launch.py — no separate process)
 exec ros2 launch urdf_assembly_6dof_moveit_config acare_sim.launch.py

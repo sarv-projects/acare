@@ -124,7 +124,7 @@ class AssistantAgent:
 
         try:
             completion = _get_client().chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",
                 messages=messages,
                 # 0.65 gives natural phrasing variation without going off-script.
                 # 0.3 (previous) made the bot repeat canned lines verbatim every turn.

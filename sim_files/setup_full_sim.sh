@@ -43,7 +43,7 @@ pip3 install --break-system-packages \
     sounddevice 'numpy<2' torch torchaudio silero-vad \
     edge-tts pyttsx3 pygame groq python-dotenv \
     onnxruntime 'opencv-python-headless<4.10' mediapipe \
-    pydantic 'PyYAML>=6.0' \
+    pydantic 'PyYAML>=6.0' openai \
     2>&1 | tail -5
 
 # 3. Sync ACARE source packages from Windows mount into WS
@@ -91,6 +91,7 @@ if [ ! -f "$VOICE_ENV" ]; then
     cat > "$VOICE_ENV" <<EOF
 DEEPGRAM_API_KEY=
 GROQ_API_KEY=
+NVIDIA_NIM_API_KEY=
 EOF
     echo ""
     echo "  ⚠️  IMPORTANT: Edit $VOICE_ENV and add your API keys!"

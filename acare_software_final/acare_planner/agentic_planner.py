@@ -1,23 +1,24 @@
 # acare_planner/agentic_planner.py
 # Spec Reference: Section XII (Task Planner Pipeline — Agentic Decision Layer)
 #
-# Agentic decision layer using openai/gpt-oss-120b via Groq.
+# Agentic decision layer using NVIDIA NIM (primary) with Groq fallback.
 # Proposes adaptive search strategies and recovery actions.
 # ALL proposals are validated by SafetyKernel before execution.
 #
-# Model: openai/gpt-oss-120b
-#   - reasoning: "high" for recovery decisions (multi-step causal)
-#   - reasoning: "low"  for search strategy hints (pattern lookup)
-#   - Strict JSON schema output — guaranteed schema compliance
-#   - temperature: 0.1 (near-deterministic for robot decisions)
+# Primary: nvidia/llama-3.3-nemotron-super-49b-v1 via NIM (40 RPM free)
+#   - Strong reasoning, tool-calling fine-tuned, 128K context
+#   - OpenAI-compatible endpoint at integrate.api.nvidia.com
+#
+# Fallback: llama-3.3-70b-versatile via Groq (30 RPM free, 300+ tok/s)
+#   - Used when NIM is unavailable or rate-limited
 #
 # Deterministic fallbacks exist for EVERY decision.
 # LLM failure NEVER stops the robot — fallback activates immediately.
 #
-# Rate limit awareness (Groq free tier):
-#   gpt-oss-120b: 30 RPM, 1000 RPD, 8000 TPM
-#   At ~5 calls/task → ~200 tasks/day before daily limit.
-#   Sufficient for clinical demo and development.
+# Rate limit awareness:
+#   NIM: 40 RPM (no daily cap documented)
+#   Groq 70B: 30 RPM, 14,400 RPD
+#   At ~3-5 calls/task → well within both budgets.
 
 from __future__ import annotations
 
@@ -126,53 +127,95 @@ class TaskContext:
 
 class AgenticPlanner:
     """
-    Proposes adaptive strategies via openai/gpt-oss-120b.
+    Proposes adaptive strategies via NVIDIA NIM (primary) or Groq (fallback).
     All proposals validated by SafetyKernel before execution.
     Falls back to deterministic decisions on any LLM failure.
     """
 
-    AGENTIC_MODEL = "openai/gpt-oss-120b"
+    # Primary: NVIDIA NIM — strong reasoning, tool-calling fine-tuned
+    NIM_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1"
+    NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+    # Fallback: Groq — fast, reliable
+    GROQ_MODEL = "llama-3.3-70b-versatile"
 
     def __init__(self, logger=None):
         self.logger = logger
-        self._client = None
-        self._init_client()
+        self._nim_client = None
+        self._groq_client = None
+        self._init_clients()
         self.user_profiles: Dict[str, UserProfile] = {}
         self.time_patterns: Dict[int, Dict[str, str]] = {}  # hour → {tool: zone}
 
-    def _init_client(self):
+    def _init_clients(self):
+        """Initialize NIM (primary) and Groq (fallback) clients."""
+        # NIM client — uses OpenAI SDK with custom base_url
         try:
-            from groq import Groq
-            api_key = os.environ.get("GROQ_API_KEY", "")
-            if api_key:
-                self._client = Groq(api_key=api_key)
+            from openai import OpenAI
+            nim_key = os.environ.get("NVIDIA_NIM_API_KEY", "")
+            if nim_key:
+                self._nim_client = OpenAI(
+                    base_url=self.NIM_BASE_URL,
+                    api_key=nim_key,
+                )
         except Exception as e:
             if self.logger:
-                self.logger.warn(f"AgenticPlanner: Groq client init failed: {e} — using deterministic fallbacks")
+                self.logger.info(f"AgenticPlanner: NIM client init skipped: {e}")
+
+        # Groq fallback client
+        try:
+            from groq import Groq
+            groq_key = os.environ.get("GROQ_API_KEY", "")
+            if groq_key:
+                self._groq_client = Groq(api_key=groq_key)
+        except Exception as e:
+            if self.logger:
+                self.logger.info(f"AgenticPlanner: Groq client init skipped: {e}")
+
+        if self._nim_client is None and self._groq_client is None:
+            if self.logger:
+                self.logger.warn("AgenticPlanner: No LLM client available — using deterministic fallbacks only")
 
     def _call_llm(self, messages: List[Dict], reasoning_level: str = "low") -> Optional[Dict]:
         """
-        Calls gpt-oss-120b with strict JSON schema.
+        Calls NIM (primary) or Groq (fallback) with JSON schema output.
         Returns parsed dict or None on any failure.
         Never raises — robot must not crash on LLM failure.
         """
-        if self._client is None:
-            return None
-        try:
-            system = PLANNER_SYSTEM_PROMPT + f"\n\nReasoning: {reasoning_level}"
-            full_messages = [{"role": "system", "content": system}] + messages
-            response = self._client.chat.completions.create(
-                model=self.AGENTIC_MODEL,
-                messages=full_messages,
-                response_format=DECISION_SCHEMA,
-                temperature=0.1,
-                max_completion_tokens=512,
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            if self.logger:
-                self.logger.warn(f"AgenticPlanner LLM call failed: {e} — using deterministic fallback")
-            return None
+        system = PLANNER_SYSTEM_PROMPT + f"\n\nReasoning: {reasoning_level}"
+        full_messages = [{"role": "system", "content": system}] + messages
+
+        # Try NIM first (stronger reasoning)
+        if self._nim_client is not None:
+            try:
+                response = self._nim_client.chat.completions.create(
+                    model=self.NIM_MODEL,
+                    messages=full_messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    max_tokens=512,
+                )
+                return json.loads(response.choices[0].message.content)
+            except Exception as e:
+                if self.logger:
+                    self.logger.info(f"AgenticPlanner NIM call failed: {e} — trying Groq fallback")
+
+        # Groq fallback (fast, reliable)
+        if self._groq_client is not None:
+            try:
+                response = self._groq_client.chat.completions.create(
+                    model=self.GROQ_MODEL,
+                    messages=full_messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                    max_tokens=512,
+                )
+                return json.loads(response.choices[0].message.content)
+            except Exception as e:
+                if self.logger:
+                    self.logger.warn(f"AgenticPlanner Groq fallback also failed: {e} — using deterministic")
+
+        return None
 
     # -----------------------------------------------------------------------
     # Search strategy (reasoning: low)
