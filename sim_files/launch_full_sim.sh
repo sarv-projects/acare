@@ -15,8 +15,16 @@ export GZ_SIM_SYSTEM_PLUGIN_PATH=/opt/ros/jazzy/lib
 # Gazebo needs to find robot meshes
 export GZ_SIM_RESOURCE_PATH=$(ros2 pkg prefix urdf_assembly_6dof_description)/share/urdf_assembly_6dof_description/meshes:$GZ_SIM_RESOURCE_PATH
 
-# For voice pipeline audio in WSL
+# For voice pipeline audio in WSL — WSLg pulse audio passthrough
 export PULSE_SERVER=unix:/mnt/wslg/PulseServer
+
+# Load voice API keys (Deepgram, Groq) into environment if .env present
+VOICE_ENV=~/acare_sim_ws/src/acare_voice/.env
+if [ -f "$VOICE_ENV" ]; then
+    set -a
+    source "$VOICE_ENV"
+    set +a
+fi
 
 echo "========================================================"
 echo " ACARE — Full Level 3 Simulation"
@@ -30,35 +38,14 @@ echo " Then: say 'fetch scissors' (or any tool)"
 echo "========================================================"
 echo ""
 
-# --- Launch the ROS2 simulation (Gazebo + controllers + bridge + ACARE nodes) ---
-ros2 launch urdf_assembly_6dof_moveit_config acare_sim.launch.py &
-SIM_PID=$!
+# --- Sanity check: voice API keys ---
+if [ -z "$DEEPGRAM_API_KEY" ] || [ -z "$GROQ_API_KEY" ]; then
+    echo "[WARN] DEEPGRAM_API_KEY or GROQ_API_KEY not set."
+    echo "       Voice pipeline will not work without them."
+    echo "       Edit: $VOICE_ENV"
+    echo ""
+fi
 
-# Wait for Gazebo and controllers to be ready
-echo "[ACARE] Waiting for simulation to initialize (15s)..."
-sleep 15
-
-# --- Launch voice pipeline in background ---
-echo "[ACARE] Starting voice pipeline..."
-cd ~/acare_sim_ws/src/acare_voice
-python3 voice_ros_node.py &
-VOICE_PID=$!
-cd ~/acare_sim_ws
-
-echo ""
-echo "========================================================"
-echo " SIMULATION RUNNING"
-echo "========================================================"
-echo ""
-echo " Gazebo: table with instruments visible"
-echo " RViz:   arm visualization"
-echo " Voice:  listening on your microphone"
-echo ""
-echo " Say 'confirm' to login (demo mode)"
-echo " Then say 'fetch scissors' or 'fetch forceps' etc."
-echo ""
-echo " Press Ctrl+C to stop everything"
-echo "========================================================"
-
-# Wait for either process to exit
-wait $SIM_PID $VOICE_PID
+# --- Launch the full simulation in one ros2 launch invocation ---
+# (Voice node is included in acare_sim.launch.py — no separate process)
+exec ros2 launch urdf_assembly_6dof_moveit_config acare_sim.launch.py

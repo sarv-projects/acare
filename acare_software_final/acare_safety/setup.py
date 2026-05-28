@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE ROS2 safety package",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "safety_node = acare_safety.safety_node:main",

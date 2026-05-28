@@ -4,7 +4,6 @@ Launches EVERYTHING: Gazebo + Robot + Bridge + Controllers + Voice + Planner + V
 One command to rule them all.
 """
 import os
-import yaml
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable, TimerAction
@@ -93,63 +92,86 @@ def generate_launch_description():
     # LAYER 3: ROS2 CONTROL (arm + gripper controllers)
     # =========================================================================
 
-    # Controller manager
-    controller_manager = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        parameters=[
-            {"robot_description": robot_description, "use_sim_time": True},
-            controllers_file,
-        ],
-        output="screen",
-    )
+    # NOTE: With Gazebo's gz_ros2_control plugin, the controller_manager runs
+    # INSIDE Gazebo. We do NOT spawn a standalone ros2_control_node here —
+    # that would conflict with the in-Gazebo manager.
+    # Instead we just spawn the controllers via the spawner once the Gazebo
+    # controller_manager service is up.
 
-    # Spawn controllers (delayed to wait for Gazebo)
-    spawn_jsb = ExecuteProcess(
-        cmd=["ros2", "control", "load_controller", "--set-state", "active",
-             "joint_state_broadcaster"],
+    spawn_jsb = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
         output="screen",
     )
-    spawn_arm = ExecuteProcess(
-        cmd=["ros2", "control", "load_controller", "--set-state", "active",
-             "arm_controller"],
+    spawn_arm = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["arm_controller", "--controller-manager", "/controller_manager"],
         output="screen",
     )
-    spawn_gripper = ExecuteProcess(
-        cmd=["ros2", "control", "load_controller", "--set-state", "active",
-             "gripper_controller"],
+    spawn_gripper = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["gripper_controller", "--controller-manager", "/controller_manager"],
         output="screen",
     )
 
     # =========================================================================
     # LAYER 4: ACARE SOFTWARE PIPELINE
-    # Run as direct Python scripts to avoid entry point packaging issues
+    # Use entry-point executables installed by colcon (ros2 run equivalents).
+    # Relative imports inside these modules require the package to be on
+    # PYTHONPATH, which sourcing install/setup.bash provides.
     # =========================================================================
 
-    acare_src = os.path.expanduser("~/acare_sim_ws/src")
-
-    # State Manager
-    state_manager = ExecuteProcess(
-        cmd=["python3", os.path.join(acare_src, "acare_planner", "state_manager.py")],
+    # State Manager — global FSM
+    state_manager = Node(
+        package="acare_planner",
+        executable="state_manager",
         output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
-    # Planner Node
-    planner_node = ExecuteProcess(
-        cmd=["python3", os.path.join(acare_src, "acare_planner", "planner_node.py")],
+    # Planner Node — agentic task planner
+    planner_node = Node(
+        package="acare_planner",
+        executable="planner_node",
         output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
-    # Safety Node
-    safety_node = ExecuteProcess(
-        cmd=["python3", os.path.join(acare_src, "acare_safety", "safety_node.py")],
+    # Safety Node — LiDAR + telemetry monitoring
+    safety_node = Node(
+        package="acare_safety",
+        executable="safety_node",
         output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
-    # Log Node
-    log_node = ExecuteProcess(
-        cmd=["python3", os.path.join(acare_src, "acare_logging", "log_node.py")],
+    # Log Node — SQLite audit trail
+    log_node = Node(
+        package="acare_logging",
+        executable="log_node",
         output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
+    # Auth Node — biometric authentication (face + voice)
+    # demo_mode: true in system.yaml lets users login by saying "confirm"
+    # without real face/voice match, but the full auth state machine still runs.
+    auth_node = Node(
+        package="acare_auth",
+        executable="auth_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
+    # Voice Node — VAD/ASR/TTS/Intent pipeline
+    voice_node = Node(
+        package="acare_voice",
+        executable="voice_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
     # =========================================================================
@@ -188,13 +210,15 @@ def generate_launch_description():
         # Layer 2: Bridge (after 2s)
         TimerAction(period=2.0, actions=[bridge]),
 
-        # Layer 3: Controllers (after 8s for Gazebo plugin to load)
-        TimerAction(period=8.0, actions=[spawn_jsb, spawn_arm, spawn_gripper]),
+        # Layer 3: Controllers (after 10s for Gazebo plugin to load)
+        TimerAction(period=10.0, actions=[spawn_jsb]),
+        TimerAction(period=12.0, actions=[spawn_arm, spawn_gripper]),
 
-        # Layer 4: ACARE nodes (after 5s)
-        TimerAction(period=5.0, actions=[state_manager, safety_node, log_node]),
-        TimerAction(period=7.0, actions=[planner_node]),
+        # Layer 4: ACARE nodes (after 6s — they need /robot_description)
+        TimerAction(period=6.0, actions=[state_manager, safety_node, log_node, auth_node]),
+        TimerAction(period=8.0, actions=[planner_node]),
+        TimerAction(period=14.0, actions=[voice_node]),  # voice last — needs API connections
 
-        # Layer 5: RViz (after 10s)
-        TimerAction(period=10.0, actions=[rviz]),
+        # Layer 5: RViz (after 12s)
+        TimerAction(period=12.0, actions=[rviz]),
     ])

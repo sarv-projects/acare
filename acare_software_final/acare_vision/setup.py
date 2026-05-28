@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE ROS2 vision package",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "camera_probe = acare_vision.camera_probe:main",

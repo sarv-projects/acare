@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE ROS2 planner package",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "state_manager = acare_planner.state_manager:main",

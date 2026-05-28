@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE ROS2 authentication node",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "auth_node = acare_auth.auth_node:main",

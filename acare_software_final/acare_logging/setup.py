@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE ROS2 logging package",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "log_node = acare_logging.log_node:main",

@@ -18,7 +18,7 @@ setup(
     maintainer="acare",
     maintainer_email="acare@todo.todo",
     description="ACARE ROS2 voice interface",
-    license="TODO",
+    license="Apache-2.0",
     entry_points={
         "console_scripts": [
             "voice_node = acare_voice.voice_ros_node:main",
