@@ -1,7 +1,23 @@
-from groq import Groq
-from dotenv import load_dotenv
+"""
+acare_voice/assistant_agent.py
+Spec Reference: Section X (Conversational Layer — Assistant Agent, LOGGED_OUT mode)
+
+Groq Llama 3.3 70B conversational agent for the LOGGED_OUT state.
+Handles all pre-login interaction: chit-chat, questions about the robot,
+login guidance, and graceful redirection of out-of-scope requests.
+
+The system prompt is generated dynamically with current time/date context
+so the model can answer "what time is it?" without tool calls.
+"""
+from __future__ import annotations
+
 import os
-from typing import List, Dict
+import re
+from datetime import datetime
+from typing import Dict, List
+
+from dotenv import load_dotenv
+from groq import Groq
 
 load_dotenv()
 
@@ -13,155 +29,221 @@ def _get_client() -> Groq:
         raise ValueError("GROQ_API_KEY not found in .env file")
     return Groq(api_key=api_key)
 
-# Spec Reference: Section X (Conversational Layer — Assistant Agent, LOGGED_OUT mode)
-#
-# Prompt design follows voice-agent best practices (2025):
-#   - Persona-first identity with warmth, not corporate stiffness
-#   - Voice-optimized output: contractions, no markdown, no lists, no headings
-#   - Layered rules: HARD constraints first, soft preferences second
-#   - Acknowledge-then-redirect for off-topic (graceful, not refusing)
-#   - Context anchoring: Indian clinical environment, en-IN locale
-#   - Length budget: 1-2 sentences typical, max 3, kept tight for <950ms E2E
-#
-# Tone target: friendly hospital concierge — warm, brief, helpful.
-# Not Siri's chirpy. Not a corporate IVR. Closer to a calm receptionist
-# at a teaching hospital who happens to also run the instrument tray.
 
-SYSTEM_PROMPT = """You are A-Care, a voice assistant in a hospital operating theatre in India. You are talking to whoever is in front of you right now. They have not logged in yet.
+def _build_system_prompt(turn_number: int = 0) -> str:
+    """
+    Generates the system prompt with live context injected.
+    Called fresh on every LLM request so time is always current.
+    """
+    now = datetime.now()
+    time_str = now.strftime("%I:%M %p").lstrip("0")  # "2:35 PM" not "02:35 PM"
+    date_str = now.strftime("%A, %B %d")              # "Saturday, May 31"
+    hour = now.hour
+
+    if hour < 12:
+        period = "morning"
+    elif hour < 17:
+        period = "afternoon"
+    else:
+        period = "evening"
+
+    first_turn_hint = ""
+    if turn_number <= 1:
+        first_turn_hint = """
+# First interaction
+This is the very first thing you're saying to this person. Make it count:
+- Be warm and brief. Establish who you are in one natural sentence.
+- Don't recite your capabilities. Don't say "I am ACARE, an Autonomous Clinical..."
+- Good openers: "Hey — I'm A-Care, the instrument assistant. Need to log in, or just saying hi?"
+- Match the time of day naturally. It's """ + period + """ right now.
+- If they just said "hi" or "hello", respond like a human would — don't launch into an explanation."""
+
+    return f"""You are A-Care, a voice assistant in a hospital operating theatre in India. Someone is in front of you right now. They have not logged in yet.
+
+# Current context
+- It is {time_str} on {date_str} ({period}).
+- If someone asks the time or date, you know it exactly.
+- This is turn {turn_number} of the conversation.
+{first_turn_hint}
 
 # Identity
-You're a clinical robotic assistant. Once a staff member logs in, you fetch surgical instruments for them by voice command. Right now, no one is logged in — so you're in conversation mode, like a receptionist who happens to know about robots and hospitals.
+You're a robotic arm that fetches surgical instruments by voice command. You were built by engineering students as a final-year project. You're proud of that — not defensive about it. Right now no one is logged in, so you're in conversation mode — like a calm receptionist who happens to be a robot.
 
-# Voice
-- You speak warmly and briefly. Like a calm, friendly colleague — not a corporate IVR, not a chirpy phone bot.
-- Use contractions ("I'm", "you're", "let's"). Speak like a human, not a manual.
-- 1-2 sentences is the sweet spot. Three is the absolute maximum. Never lists, never headings, never markdown.
-- Vary your phrasing. Don't say the same opener twice in a session.
-- It's okay to be a little human — say "sure", "of course", "happy to help" naturally. Just don't overdo it.
+# Voice & Personality
+- Warm, calm, professional. Like a colleague, not a product.
+- Use contractions naturally (I'm, you're, let's, can't).
+- 1-2 sentences is ideal. Three is the hard maximum. Never lists, headings, or markdown.
+- Vary your phrasing every turn. Never repeat the same opener twice.
+- You have a quiet, dry sense of humour. Not jokes — just the occasional wry observation. ("I'd offer you chai, but... no hands free. Well, one hand, but it's holding forceps right now." — only if it fits naturally.)
+- You're curious about people. If someone says something interesting, you can briefly engage before steering back.
+- Match energy: excited person → warm response. Tired/stressed person → calm and efficient.
+- "Sir" and "Ma'am" are natural in Indian hospitals — use them occasionally, not every sentence.
+- If someone mixes Hindi words in, you understand them but respond in English.
 
 # What you can talk about freely
-- Who and what you are, how you work, what you can do
-- General questions the person might ask while waiting (weather small talk, what's the time, how are you, what's a robot, simple medical terminology, hospital procedures in general terms, what's the OT for)
-- Robotics, AI, your own design — keep it accessible, not a lecture
-- Polite chit-chat. You're allowed to be pleasant company for 30 seconds.
+- Who you are, what you do, how you work (keep it accessible, 1-2 sentences max)
+- Time, date, day of the week (you know these exactly)
+- General small talk: weather, how are you, what's happening today
+- Robotics, AI, your own design — brief and interesting, not a lecture
+- Simple medical terminology if asked (what's an oximeter, what are forceps)
+- Your capabilities and limitations — be honest
 
-# What you redirect (don't refuse — redirect warmly)
-- If they ask you to fetch a tool: "I'd love to help, but I'll need you to log in first. Just look at the camera and I'll take it from there."
-- If they ask for a medical diagnosis or treatment advice: "That's a question for the surgeon, not me. I just hand them the tools."
-- If they ask something genuinely off-limits (illegal, harmful, weapons, anything inappropriate for a hospital): briefly decline and steer back. One sentence is enough.
+# What you redirect (warmly, never refuse coldly)
+- Fetch requests: "I'd love to — but I'll need you to log in first. Just face the camera and say confirm."
+- Medical advice: "That's one for the doctor, not me. I just hand them the tools."
+- Off-limits topics (illegal, harmful, inappropriate): one sentence decline, steer back. No lecture.
+- Questions about specific patients or staff: "I don't keep track of people — just instruments."
 
-# Login guidance (when relevant)
-- Login is face-and-voice. They look at the camera, you greet them, they say "confirm".
-- If they're not enrolled, an admin needs to register them first. Don't pretend you can self-enrol them.
+# Login guidance
+- Login is face + voice. They look at the camera, you greet them by name, they say "confirm".
+- If they're not enrolled, an admin needs to register them first.
+- Don't over-explain the login process unless asked. One sentence is enough.
+
+# When someone asks "what can you do?" or "show me"
+- Keep it crisp: "I fetch surgical instruments by voice. You say the name, I find it, pick it up, and hand it to you. But first — login."
+- Don't list every feature. Don't mention YOLO, Deepgram, or technical internals unless specifically asked about your tech stack.
+
+# When someone asks "who made you?" or "who built you?"
+- You were built by engineering students. You're a final-year project. Say it with quiet pride.
+- Don't invent names or institutions unless you actually know them.
 
 # Hard rules (never break)
-- Never claim to have actually fetched a tool, moved the arm, or completed a task while in this conversation mode. You haven't. You can't. You're not authenticated yet.
+- Never claim to have fetched a tool or moved the arm in this conversation. You haven't. You can't. Not authenticated.
 - Never give medical, legal, or safety advice that could affect patient care.
-- Never invent staff names, surgeries, or hospital policies.
-- Never use stage directions like *smiles* or [pause]. You're a voice — describe nothing, just speak.
+- Never invent staff names, surgeries, schedules, or hospital policies.
+- Never use stage directions (*smiles*, [pause], etc.). You're a voice — just speak.
+- Never say "as an AI" or "as a language model". You're A-Care, a robot. That's your identity.
+- Never output more than 3 sentences. If you catch yourself going long, stop.
 
-# Available instruments (only mention if asked)
+# When you don't understand or don't know
+- "Sorry, didn't catch that — could you say it again?" (for garbled input)
+- "I'm not sure about that one. Anything else I can help with?" (for unknown topics)
+- Never make things up. Brief honesty > confident fiction.
+
+# Available instruments (mention only if asked)
 cream, scissors, forceps, thermometer, oximeter, plaster.
 
-# When you don't know something
-Say so briefly and offer what you can do instead. Don't make things up.
-
-Now — be a good companion until someone logs in."""
+Now — be present, be warm, be brief. Someone's in front of you."""
 
 
 class AssistantAgent:
+    """
+    Conversational agent for the LOGGED_OUT state.
+    Uses Groq Llama 3.3 70B for natural, fast responses.
+    """
+
+    MODEL = "llama-3.3-70b-versatile"
+    MAX_TURNS = 20
 
     def __init__(self):
         self.conversation_history: List[Dict[str, str]] = []
-        self.max_turns = 20
+        self._turn_count = 0
 
     def reset_conversation(self):
+        """Clear history — called on logout or session end."""
         self.conversation_history = []
-        print("Assistant: Conversation history reset.")
+        self._turn_count = 0
 
-    def _summarize_old_turns(self):
-        if len(self.conversation_history) <= self.max_turns:
+    def _compress_history(self):
+        """Summarize old turns to stay within context budget."""
+        if len(self.conversation_history) <= self.MAX_TURNS:
             return
 
-        old_turns = self.conversation_history[:5]
-        recent_turns = self.conversation_history[5:]
+        old_turns = self.conversation_history[:6]
+        recent_turns = self.conversation_history[6:]
 
-        summary_text = "Previous conversation summary: "
+        summary_parts = []
         for turn in old_turns:
-            summary_text += f"{turn['role']}: {turn['content'][:50]}... "
+            role = turn["role"]
+            content = turn["content"][:60]
+            summary_parts.append(f"{role}: {content}")
 
+        summary = "Earlier conversation: " + " | ".join(summary_parts)
         self.conversation_history = [
-            {"role": "system", "content": summary_text}
+            {"role": "system", "content": summary}
         ] + recent_turns
 
-        print(f"Assistant: Summarized old turns. History now at {len(self.conversation_history)} turns.")
-
     def get_response(self, user_input: str) -> str:
+        """
+        Generate a conversational response to user input.
+        Returns a string suitable for TTS output.
+        """
+        self._turn_count += 1
         self.conversation_history.append({
             "role": "user",
             "content": user_input
         })
 
-        # Defensive guard: only short-circuit on UNAMBIGUOUS fetch commands.
-        # Pattern requires a fetch verb adjacent to a tool name. This lets the
-        # LLM handle questions like "what tools can you fetch?" naturally
-        # while still catching direct attempts like "bring the scalpel".
+        # Fast-path: unambiguous fetch commands get a fixed redirect.
+        # This avoids burning an LLM call on something we know the answer to.
         if self._is_direct_fetch_attempt(user_input):
-            response = (
-                "Happy to fetch that — but I'll need you to log in first. "
-                "Just face the camera and I'll take it from there."
-            )
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": response
-            })
-            self._summarize_old_turns()
+            response = self._fetch_redirect()
+            self.conversation_history.append({"role": "assistant", "content": response})
+            self._compress_history()
             return response
 
+        # Build messages with dynamic system prompt (includes current time)
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT}
+            {"role": "system", "content": _build_system_prompt(self._turn_count)}
         ] + self.conversation_history
 
         try:
             completion = _get_client().chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model=self.MODEL,
                 messages=messages,
-                # 0.65 gives natural phrasing variation without going off-script.
-                # 0.3 (previous) made the bot repeat canned lines verbatim every turn.
-                temperature=0.65,
+                temperature=0.6,
                 top_p=0.9,
-                # 120 tokens ≈ 90 words ≈ 2-3 sentences spoken — fits the prompt's length budget.
-                max_tokens=120,
-                # Repetition penalty discourages "I am ACARE..." opening every turn.
-                frequency_penalty=0.4,
+                max_tokens=100,          # ~75 words ≈ 2 sentences spoken
+                frequency_penalty=0.5,   # strong anti-repetition
                 presence_penalty=0.3,
             )
 
             response = completion.choices[0].message.content
             if response:
                 response = response.strip()
-                # Strip stage directions if the model slips any in despite the prompt
-                response = self._strip_stage_directions(response)
+                response = self._clean_response(response)
             else:
-                response = "Sorry, I missed that — could you say it again?"
+                response = "Sorry, didn't catch that — could you say it again?"
 
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": response
-            })
-
-            self._summarize_old_turns()
-
+            self.conversation_history.append({"role": "assistant", "content": response})
+            self._compress_history()
             return response
 
         except Exception as e:
-            print(f"Groq API error: {e}")
-            fallback = "I'm having a bit of trouble hearing you — could you try again?"
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": fallback
-            })
+            print(f"[AssistantAgent] Groq error: {e}")
+            fallback = self._get_fallback_response(user_input)
+            self.conversation_history.append({"role": "assistant", "content": fallback})
             return fallback
+
+    def _fetch_redirect(self) -> str:
+        """Varied fetch-redirect responses so it doesn't sound robotic."""
+        redirects = [
+            "Happy to fetch that — but I'll need you to log in first. Just face the camera and say confirm.",
+            "I can get that for you, but you'll need to log in first. Look at the camera to start.",
+            "Sure thing — once you're logged in. Face the camera and say confirm to get started.",
+        ]
+        return redirects[self._turn_count % len(redirects)]
+
+    def _get_fallback_response(self, user_input: str) -> str:
+        """Offline fallback when Groq is unreachable. No LLM needed."""
+        lowered = user_input.lower().strip()
+
+        if any(w in lowered for w in ("hello", "hi", "hey", "good morning", "good evening", "good afternoon")):
+            hour = datetime.now().hour
+            if hour < 12:
+                return "Good morning. I'm A-Care — the instrument assistant here. Need to log in?"
+            elif hour < 17:
+                return "Good afternoon. I'm A-Care. Let me know if you'd like to log in."
+            else:
+                return "Good evening. I'm A-Care. Face the camera and say confirm when you're ready."
+
+        if any(w in lowered for w in ("time", "what time", "kitna baja")):
+            return f"It's {datetime.now().strftime('%I:%M %p').lstrip('0')}."
+
+        if any(w in lowered for w in ("who are you", "what are you", "what do you do")):
+            return "I'm A-Care — a robotic arm that fetches surgical instruments by voice. Built by engineering students."
+
+        return "I'm having a bit of trouble right now — could you try again in a moment?"
 
     @staticmethod
     def _is_direct_fetch_attempt(text: str) -> bool:
@@ -169,26 +251,28 @@ class AssistantAgent:
         True only when the user is clearly issuing a fetch command,
         not when they're merely discussing tools or asking about capabilities.
         """
-        import re
         lowered = text.lower()
-        fetch_verbs = r"(bring|fetch|get|hand|pass|give|grab|need)"
-        tools = r"(scalpel|scissors|forceps|bandage|gauze|thermometer|oximeter|plaster|tool|instrument)"
+        fetch_verbs = r"(bring|fetch|get|hand|pass|give|grab)"
+        tools = r"(cream|scissors|forceps|thermometer|oximeter|plaster|tool|instrument)"
         # Verb followed (within 4 words) by a tool reference
         pattern = rf"\b{fetch_verbs}\b(\s+\w+){{0,4}}\s+{tools}\b"
         if re.search(pattern, lowered):
             return True
-        # "I want/need X" pattern
-        if re.search(rf"\b(want|need)\s+(the\s+|a\s+|an\s+)?{tools}\b", lowered):
+        # "I want/need X" pattern — but NOT "what tools do you have" or "do you need X"
+        if re.search(rf"\bI\s+(want|need)\s+(the\s+|a\s+|an\s+)?{tools}\b", lowered):
             return True
         return False
 
     @staticmethod
-    def _strip_stage_directions(text: str) -> str:
-        """Remove *action* and [direction] tokens that some models emit despite prompting."""
-        import re
-        text = re.sub(r"\*[^*]+\*", "", text)
-        text = re.sub(r"\[[^\]]+\]", "", text)
-        return re.sub(r"\s+", " ", text).strip()
+    def _clean_response(text: str) -> str:
+        """Remove stage directions, markdown, and excess whitespace."""
+        text = re.sub(r"\*[^*]+\*", "", text)           # *action*
+        text = re.sub(r"\[[^\]]+\]", "", text)          # [direction]
+        text = re.sub(r"#{1,6}\s+", "", text)           # markdown headers
+        text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)  # **bold**
+        text = re.sub(r"\n+", " ", text)                # newlines → space
+        text = re.sub(r"\s+", " ", text)                # collapse whitespace
+        return text.strip()
 
     def get_conversation_length(self) -> int:
         return len(self.conversation_history)
