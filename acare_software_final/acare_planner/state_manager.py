@@ -27,7 +27,11 @@ except ImportError:
 VALID_TRANSITIONS = {
     'OFFLINE':    {'LOGGED_OUT'},
     'LOGGED_OUT': {'STANDBY'},
-    'STANDBY':    {'LISTENING', 'LOGGED_OUT'},
+    # STANDBY can go to LISTENING (voice-driven flow: STANDBY→LISTENING→PROCESSING)
+    # or directly to PROCESSING (planner-driven flow: task received while in STANDBY).
+    # Both paths are valid — the planner skips LISTENING when it already has a
+    # validated intent and goes straight to task execution.
+    'STANDBY':    {'LISTENING', 'PROCESSING', 'LOGGED_OUT'},
     'LISTENING':  {'PROCESSING', 'STANDBY'},
     'PROCESSING': {'EXECUTING', 'STANDBY'},
     'EXECUTING':  {'HOLDING', 'ESTOP'},
