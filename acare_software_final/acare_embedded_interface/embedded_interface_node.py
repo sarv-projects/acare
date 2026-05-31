@@ -112,7 +112,14 @@ class EmbeddedInterfaceNode(Node):
             )
 
     def _on_robot_state(self, msg: RobotState):
+        prev = self._robot_state
         self._robot_state = msg.state
+        # Clear the ESTOP latch when the system recovers to STANDBY/LOGGED_OUT.
+        # Without this, every goal stays rejected until process restart.
+        if msg.state in ("STANDBY", "LOGGED_OUT") and prev == "ESTOP":
+            with self._lock:
+                self._estop = False
+            self.get_logger().info("Embedded interface: ESTOP latch cleared on recovery")
 
     # ------------------------------------------------------------------
     # Command guards
@@ -179,7 +186,9 @@ class EmbeddedInterfaceNode(Node):
         if self._estop:
             self._publish_feedback(False, phase, "estop_active")
             return
-        if not client.wait_for_server(timeout_sec=2.0):
+        # NON-BLOCKING readiness check. wait_for_server(timeout=2s) would block
+        # the executor and could delay the ESTOP callback — never block here.
+        if not client.server_is_ready():
             self.get_logger().warn(f"{phase}: controller action server not available")
             self._publish_feedback(False, phase, "controller_unavailable")
             return
@@ -187,7 +196,11 @@ class EmbeddedInterfaceNode(Node):
         future = client.send_goal_async(goal)
 
         def on_accepted(fut):
-            handle = fut.result()
+            try:
+                handle = fut.result()
+            except Exception as exc:
+                self._publish_feedback(False, phase, f"goal_error:{exc}")
+                return
             if not handle.accepted:
                 self._publish_feedback(False, phase, "goal_rejected")
                 return
@@ -212,34 +225,40 @@ class EmbeddedInterfaceNode(Node):
     # Subscribers
     # ------------------------------------------------------------------
     def _on_arm_command(self, msg: ArmCommand):
+        cmd = msg.command.upper()
         if self._robot_state == "LOGGED_OUT" and not self._is_allowed_logged_out_arm_command(msg):
             self.get_logger().warn("Rejected non-kiosk arm command while LOGGED_OUT")
-            self._publish_feedback(False, f"arm_{msg.command.lower()}", "logged_out_pose_guard")
+            self._publish_feedback(False, f"arm_{cmd.lower()}", "logged_out_pose_guard")
             return
 
-        if msg.command not in {"MOVE", "MOVE_REL"}:
-            self._publish_feedback(False, f"arm_{msg.command.lower()}", "unsupported_command")
+        # Only absolute MOVE is supported. MOVE_REL would need current joint
+        # state to convert to absolute — not available without joint feedback,
+        # so we reject it rather than send a wrong (absolute) trajectory.
+        if cmd != "MOVE":
+            self._publish_feedback(False, f"arm_{cmd.lower()}", "unsupported_command")
             return
 
         positions = list(msg.joint_angles)
         if len(positions) != len(ARM_JOINT_NAMES):
-            self._publish_feedback(False, f"arm_{msg.command.lower()}", f"expected_{len(ARM_JOINT_NAMES)}_joints")
+            self._publish_feedback(False, f"arm_{cmd.lower()}", f"expected_{len(ARM_JOINT_NAMES)}_joints")
             return
 
         # Velocity scale → trajectory duration. Faster scale → shorter duration.
         vel = max(0.05, min(1.0, float(msg.velocity_scale) or 0.5))
         duration = DEFAULT_ARM_DURATION / vel
         goal = self._build_trajectory(ARM_JOINT_NAMES, positions, duration)
-        phase = f"arm_{msg.command.lower()}"
+        phase = f"arm_{cmd.lower()}"
         self._send_goal_async(self._arm_client, goal, phase)
 
     def _on_gripper_command(self, msg: GripperCommand):
-        if self._robot_state == "LOGGED_OUT" and msg.command in {"GRASP", "CLOSE"}:
+        cmd = msg.command.upper()
+        # Guard computed on the upper-cased command so lowercase "grasp"/"close"
+        # can't bypass the LOGGED_OUT guard (fail-closed, not fail-open).
+        if self._robot_state == "LOGGED_OUT" and cmd in {"GRASP", "CLOSE"}:
             self.get_logger().warn("Rejected grasp command while LOGGED_OUT")
-            self._publish_feedback(False, f"gripper_{msg.command.lower()}", "logged_out_gripper_guard")
+            self._publish_feedback(False, f"gripper_{cmd.lower()}", "logged_out_gripper_guard")
             return
 
-        cmd = msg.command.upper()
         if cmd in {"GRASP", "CLOSE"}:
             position = GRIPPER_CLOSE_POS
             force = float(msg.force_target)

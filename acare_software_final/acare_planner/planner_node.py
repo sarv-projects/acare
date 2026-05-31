@@ -120,11 +120,27 @@ class PlannerNode(Node):
         self._voice_confirm_word = ""
         self._handover_height_adjustment = 0.0
         self._safe_drop_zone, self._handover_zone = self._load_robot_points()
+        self._workspace = self._load_workspace()
         self._kiosk_rest_pose, self._kiosk_interaction_pose, self._kiosk_return_timeout_s = self._load_kiosk_poses()
         self.safe_limits = self._load_safe_limits()
         self._presentation_timer = None
         self._current_named_pose = ""
+        self._estop_active = threading.Event()   # signals running task to abort
         self.get_logger().info("Planner node ready")
+
+    def _load_workspace(self) -> dict:
+        """Load reachable workspace bounds from system.yaml (single source of truth)."""
+        default = {'xmin': -0.6, 'xmax': 0.6, 'ymin': -0.6, 'ymax': 0.6, 'zmin': 0.0, 'zmax': 0.75}
+        try:
+            import yaml
+            with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
+                cfg = yaml.safe_load(handle) or {}
+            ws = cfg.get("robot", {}).get("workspace", {})
+            if ws:
+                return {k: float(ws.get(k, default[k])) for k in default}
+        except Exception:
+            pass
+        return default
 
     def _load_robot_points(self):
         try:
@@ -361,23 +377,42 @@ class PlannerNode(Node):
         return True
 
     def _execute_fetch_task(self, tool: str, user_id: str, user_name: str):
+        # Reset per-task state so nothing leaks from a previous task.
+        self._estop_active.clear()
+        self._handover_height_adjustment = 0.0
+        self._voice_confirm_word = ""
         try:
             if not self._check_world_state():
                 self._abort_task("System not ready for task execution.")
                 return
 
+            if self._estop_active.is_set():
+                return
+
             self._transition_state("PROCESSING", f"processing_{tool}")
             self._send_gripper_open()
             if not self._phase_vision_search(tool, user_id):
+                if self._estop_active.is_set():
+                    return
                 self._abort_task(f"Cannot locate {tool}. Can you confirm it is on the tray?")
+                return
+
+            if self._estop_active.is_set():
                 return
 
             self._transition_state("EXECUTING", f"executing_{tool}")
             if not self._phase_grasp(tool):
+                if self._estop_active.is_set():
+                    return
                 self._abort_task(f"Unable to grasp {tool}. Please reposition it.")
                 return
 
+            if self._estop_active.is_set():
+                return
+
             if not self._phase_handover(tool, user_id, user_name):
+                if self._estop_active.is_set():
+                    return
                 self._speak(f"No collection detected. Returning {tool} to tray.")
                 self._safe_deposit(tool)
                 return
@@ -707,8 +742,8 @@ class PlannerNode(Node):
                     now = time.monotonic()
 
                     if delta > PALM_TRACKING_MIN_DELTA_M and (now - last_move_time) > 0.5:
-                        # Validate target is within workspace
-                        w = {'xmin': -0.4, 'xmax': 0.4, 'ymin': -0.3, 'ymax': 0.3, 'zmin': 0.0, 'zmax': 0.5}
+                        # Validate target is within the real workspace (from config)
+                        w = self._workspace
                         x, y, z = palm_pos
                         if (w['xmin'] <= x <= w['xmax'] and
                             w['ymin'] <= y <= w['ymax'] and
@@ -773,7 +808,12 @@ class PlannerNode(Node):
             time.sleep(0.05)
         return False
 
-    def _send_arm_move(self, position: tuple[float, float, float], velocity_scale: float = 1.0, rotation_offset_deg: float = 0.0) -> bool:
+    def _send_arm_move(self, position: tuple[float, float, float], velocity_scale: float = 1.0, rotation_offset_deg: float = 0.0, allow_during_estop: bool = False) -> bool:
+        # Refuse any motion while ESTOP is active (defense in depth — the
+        # embedded interface also guards this, but stop here too).
+        # Exception: safe-deposit needs to move to set the tool down safely.
+        if self._estop_active.is_set() and not allow_during_estop:
+            return False
         validated = ArmMoveCommand(
             x=float(position[0]),
             y=float(position[1]),
@@ -783,7 +823,19 @@ class PlannerNode(Node):
         )
         self._current_named_pose = ""
         self.context.motion_start = time.monotonic()
-        q = self.ik.solve_grasp((validated.x, validated.y, validated.z))
+
+        # IK with reachability check. If the target is outside the arm's
+        # reachable envelope (or violates a joint limit), do NOT send a
+        # clamped/wrong pose — fail early so the planner can recover.
+        ik_result = self.ik.solve_with_status((validated.x, validated.y, validated.z))
+        if not ik_result.reachable:
+            self.get_logger().warn(
+                f"IK unreachable for ({validated.x:.3f}, {validated.y:.3f}, "
+                f"{validated.z:.3f}): {ik_result.reason}"
+            )
+            return False
+        q = ik_result.joint_angles
+
         cmd = ArmCommand()
         cmd.command = "MOVE"
         cmd.joint_angles = [float(v) for v in q]
@@ -828,16 +880,30 @@ class PlannerNode(Node):
 
     def _safe_deposit(self, tool: str = ""):
         validated = SafeDepositCommand(tool=tool)
-        self._send_arm_move(self._safe_drop_zone, velocity_scale=0.3)
+        # allow_during_estop: a safe deposit is the correct response to ESTOP
+        # while holding a tool — gently set it down rather than freeze mid-air.
+        self._send_arm_move(self._safe_drop_zone, velocity_scale=0.3, allow_during_estop=True)
         self._send_gripper_release()
         self.world.arm_holding = False
         self._transition_state("STANDBY", f"safe_deposit_{validated.tool or self.context.tool}")
         self._log_event("SAFE_DEPOSIT", tool=validated.tool, description="Returned tool to tray")
 
     def _handle_estop(self, reason: str):
-        if self.world.arm_holding:
-            self._safe_deposit(self.context.tool)
+        # Signal any running task thread to abort between phases.
+        self._estop_active.set()
+        # Unblock any in-flight wait() calls so the task thread wakes promptly.
+        self._vision_event.set()
+        self._motion_event.set()
+        # Transition to ESTOP first so the system is unambiguously in ESTOP.
         self._transition_state("ESTOP", f"estop_{reason}")
+        # Then safely set down a held tool (move allowed during estop, but
+        # do NOT transition state — we must remain in ESTOP until resume).
+        if self.world.arm_holding:
+            self._send_arm_move(self._safe_drop_zone, velocity_scale=0.3, allow_during_estop=True)
+            self._send_gripper_release()
+            self.world.arm_holding = False
+            self._log_event("SAFE_DEPOSIT", tool=self.context.tool,
+                            description="ESTOP — tool set down, holding in ESTOP")
 
     def _abort_task(self, message: str):
         validated = AbortCommand(message=message)

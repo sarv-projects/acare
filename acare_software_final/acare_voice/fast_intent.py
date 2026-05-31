@@ -101,7 +101,7 @@ def parse_fast_intent(transcript: str, last_tool: Optional[str] = None) -> Optio
             }
 
     for pattern in FOLLOW_UP_PATTERNS:
-        match = pattern.match(text)
+        match = pattern.search(text)
         if match:
             tool = match.group(1).lower() if match.lastindex and match.group(1) else last_tool
             if tool and tool in VALID_TOOLS:
@@ -127,7 +127,7 @@ def parse_fast_intent(transcript: str, last_tool: Optional[str] = None) -> Optio
         }
 
     for pattern in FETCH_PATTERNS:
-        match = pattern.match(text)
+        match = pattern.search(text)
         if match:
             tool = match.group(1).lower()
             if tool in VALID_TOOLS:
@@ -158,7 +158,7 @@ def is_simple_command(transcript: str) -> bool:
         return True
     if any(p.match(text) for p in CONFIRM_PATTERNS + REJECT_PATTERNS):
         return True
-    if any(p.match(text) for p in FETCH_PATTERNS):
+    if any(p.search(text) for p in FETCH_PATTERNS):
         return True
     if any(re.search(rf"\b{t}\b", text) for t in VALID_TOOLS):
         return True

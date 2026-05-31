@@ -182,7 +182,15 @@ class VoiceNode:
         if not text or not text.strip():
             return
 
+        # SAFETY: check ESTOP keywords on the FINAL transcript too, not just
+        # partials. Deepgram partials can be missed (network jitter, short
+        # utterances), so a final-transcript ESTOP check is a critical
+        # backstop. This runs BEFORE any state routing so "stop" always wins.
+        if self._check_estop_in_final(text):
+            return
+
         if self.state_mgr.state == SystemState.ESTOP:
+            # While in ESTOP, only a resume keyword can get us out.
             return
 
         print(f"[VoiceNode] Transcript: {text}")
@@ -195,6 +203,31 @@ class VoiceNode:
             return
 
         self._handle_command_mode(text)
+
+    def _check_estop_in_final(self, text: str) -> bool:
+        """
+        Backstop ESTOP detection on final transcripts.
+        Returns True if an ESTOP keyword was found and handled.
+
+        Only triggers on SHORT utterances dominated by the keyword — so
+        "stop" or "stop now" fire, but "stop asking me that" does not
+        (that's conversation, handled by the continuation-word logic in
+        KeywordMonitor for partials; here we keep it strict on finals).
+        """
+        if self.km.estop_active:
+            return False
+        lowered = text.lower().strip()
+        words = [w.strip(".,!?;:'\"") for w in lowered.split()]
+        if not words:
+            return False
+        for kw in ("stop", "halt", "emergency", "abort", "ruko", "bas"):
+            if kw in words:
+                # Strict: the utterance must be short (<=2 words) so we don't
+                # fire on conversational uses like "stop asking me questions".
+                if len(words) <= 2:
+                    self.km.force_estop(kw)
+                    return True
+        return False
 
     def _handle_assistant_mode(self, text: str) -> None:
         self.state_mgr.transition(SystemState.ASSISTING, "Assistant mode")

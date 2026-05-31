@@ -73,7 +73,12 @@ class ASRClient:
             encoding="linear16",
             punctuate=True,
             interim_results=True,
-            endpointing=15000,
+            # 300ms of silence → finalize. Conversational sweet spot.
+            # Was 15000 (15s!) which made every command take 15s to finalize.
+            endpointing=300,
+            # utterance_end_ms gives a clean end-of-speech signal independent
+            # of endpointing, useful for turn-taking.
+            utterance_end_ms=1000,
             vad_events=False,
         )
 
@@ -125,7 +130,8 @@ class ASRClient:
                         encoding="linear16",
                         punctuate=True,
                         interim_results=True,
-                        endpointing=15000,
+                        endpointing=300,
+                        utterance_end_ms=1000,
                         vad_events=False,
                     )
                     if self.loop and self.loop.is_running():

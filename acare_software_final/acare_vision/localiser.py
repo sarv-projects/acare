@@ -21,12 +21,12 @@ from pathlib import Path
 
 from acare_bringup.paths import SYSTEM_YAML
 
-# Placeholder intrinsics — typical values for a 640x480 camera at ~60° FOV
-# MUST be replaced with calibrated values before deployment
-PLACEHOLDER_FX = 554.0   # focal length x in pixels
-PLACEHOLDER_FY = 554.0   # focal length y in pixels
-PLACEHOLDER_CX = 320.0   # principal point x (image centre)
-PLACEHOLDER_CY = 240.0   # principal point y (image centre)
+# Default intrinsics — real HP60C values (read from /camera_info, 2026-05-30).
+# These are overridden live by update_intrinsics() from the camera_info topic.
+PLACEHOLDER_FX = 572.04   # focal length x in pixels
+PLACEHOLDER_FY = 571.49   # focal length y in pixels
+PLACEHOLDER_CX = 329.27   # principal point x
+PLACEHOLDER_CY = 242.09   # principal point y
 
 # Placeholder extrinsics — identity transform (camera = robot base frame)
 # MUST be replaced with calibrated T_robot_camera after arm assembly
@@ -63,13 +63,15 @@ class Localiser:
                 cfg = yaml.safe_load(f)
             cam = cfg.get('camera', {})
             if all(k in cam for k in ('fx', 'fy', 'cx', 'cy', 'T_robot_camera')):
-                self.fx = float(cam['fx'])
-                self.fy = float(cam['fy'])
-                self.cx = float(cam['cx'])
-                self.cy = float(cam['cy'])
-                T_flat  = cam['T_robot_camera']
-                self.T  = np.array(T_flat, dtype=np.float64).reshape(4, 4)
-                self._calibrated = True
+                fx, fy, cx, cy = (float(cam['fx']), float(cam['fy']),
+                                  float(cam['cx']), float(cam['cy']))
+                # Guard against bad/zero intrinsics that would cause div-by-zero
+                # in pixel_to_robot. Only accept positive focal lengths.
+                if fx > 0.0 and fy > 0.0:
+                    self.fx, self.fy, self.cx, self.cy = fx, fy, cx, cy
+                    T_flat = cam['T_robot_camera']
+                    self.T = np.array(T_flat, dtype=np.float64).reshape(4, 4)
+                    self._calibrated = True
         except Exception:
             pass  # use placeholders
 
@@ -111,11 +113,20 @@ class Localiser:
         u = int(min(max(u, 0), w - 1))
         v = int(min(max(v, 0), h - 1))
 
+        # Read depth at the centre pixel. If it's a hole (0 or out of range),
+        # fall back to the median of valid depths in a window around the centre.
+        # HP60C depth can be sparse (reflective surfaces, IR shadows), so a
+        # single-pixel read often misses. The window makes localisation robust.
         depth_mm = float(depth_frame[v, u])
-
-        # HP60C valid range: 200mm – 4000mm
         if depth_mm < 200 or depth_mm > 4000:
-            return None
+            half = 20  # 40x40 window
+            u1 = max(0, u - half); u2 = min(w, u + half)
+            v1 = max(0, v - half); v2 = min(h, v + half)
+            window = depth_frame[v1:v2, u1:u2].astype(np.float32)
+            valid = window[(window >= 200) & (window <= 4000)]
+            if valid.size == 0:
+                return None
+            depth_mm = float(np.median(valid))
 
         depth_m = depth_mm / 1000.0
 

@@ -1,11 +1,13 @@
 robot:
   workspace:
-    xmin: -0.4
-    xmax:  0.4
-    ymin: -0.3
-    ymax:  0.3
+    # Reachable envelope based on confirmed link lengths (400+400mm arm,
+    # 236mm tool drop). Comfortable tray pick range is 0.40–0.55m from base.
+    xmin: -0.60
+    xmax:  0.60
+    ymin: -0.60
+    ymax:  0.60
     zmin:  0.0
-    zmax:  0.5
+    zmax:  0.75
   safe_drop_zone:  {x: 0.0, y: 0.35, z: 0.05}   # [FILL_AFTER_ASSEMBLY]
   handover_zone:   {x: 0.0, y: 0.40, z: 0.10}   # [FILL_AFTER_ASSEMBLY]
   handover_height_adjustment_m: 0.05
@@ -21,18 +23,22 @@ arm:
     - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 4 [FILL_AFTER_ASSEMBLY]
     - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 5 [FILL_AFTER_ASSEMBLY]
     - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 6 [FILL_AFTER_ASSEMBLY]
-  joint_limits_min: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # [FILL_AFTER_ASSEMBLY]
-  joint_limits_max: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]    # [FILL_AFTER_ASSEMBLY]
+  # Joint limits in RADIANS. Confirmed from hardware team:
+  #   J1 base [-180,180]  J2 shoulder [-135,135]  J3 elbow [-120,120]
+  #   J4 wrist_1 [-180,180]  J5 wrist_2 [-180,180]  J6 wrist_3 [-180,180]
+  joint_limits_min: [-3.14159, -2.35619, -2.09440, -3.14159, -3.14159, -3.14159]
+  joint_limits_max: [ 3.14159,  2.35619,  2.09440,  3.14159,  3.14159,  3.14159]
   neutral_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # [FILL_AFTER_ASSEMBLY]
   # Exhibition / kiosk poses. These are deterministic, pre-approved arm poses.
   kiosk_rest_joint_angles: [0.0, 0.15, -0.35, 0.0, 0.10, 0.0]
   kiosk_interaction_joint_angles: [0.0, -0.10, -0.05, 0.0, -0.05, 0.0]
+  # Link lengths in METRES — confirmed from CAD assembly.
   link_lengths:
-    base_height: 0.0   # [FILL_AFTER_ASSEMBLY]
-    upper_arm:   0.0   # [FILL_AFTER_ASSEMBLY]
-    forearm:     0.0   # [FILL_AFTER_ASSEMBLY]
-    wrist:       0.0   # [FILL_AFTER_ASSEMBLY]
-    gripper:     0.0   # [FILL_AFTER_ASSEMBLY]
+    base_height: 0.352   # J1 axis → J2 shoulder
+    upper_arm:   0.400   # J2 shoulder → J3 elbow
+    forearm:     0.400   # J3 elbow → J4 wrist
+    wrist:       0.236   # J4 → tool tip (TCP)
+    gripper:     0.0     # included in wrist length above
   control_soft_limits:
     velocity_soft_ratio: 0.90
     current_soft_margin_a: 0.50
@@ -44,16 +50,17 @@ arm:
     kiosk_accel_limit: 0.10
 
 camera:
-  # Intrinsics — fill after calibration (admin.py calibrate Step 2)
-  fx: 554.0   # placeholder — typical 640x480 ~60deg FOV
-  fy: 554.0
-  cx: 320.0
-  cy: 240.0
+  # Intrinsics — real HP60C values read from /camera_info topic (2026-05-30)
+  fx: 572.04
+  fy: 571.49
+  cx: 329.27
+  cy: 242.09
   # Optional exact ascamera parameter overrides.
   # Leave empty until `vision_node` logs the exact parameter names exported by /ascamera_hp60c.
   control_overrides: {}
   # Extrinsics — 4x4 transform camera→robot base, flat 16-element list
-  # Fill after arm assembly and camera mounting (admin.py calibrate Step 5)
+  # STILL PLACEHOLDER (identity) — fill after arm assembly + camera mounting
+  # (admin.py calibrate Step 5). Until then 3D positions are in CAMERA frame.
   T_robot_camera: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
 
 vision:

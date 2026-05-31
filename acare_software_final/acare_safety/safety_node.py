@@ -67,6 +67,13 @@ class SafetyNode(Node):
         self.T = dict(DEFAULTS)
         self._load_thresholds()
 
+        # Alert throttle: suppress identical (severity, source) alerts within
+        # this window so a sustained condition at 50Hz doesn't flood the topic.
+        # ESTOP is NEVER throttled — every ESTOP is published immediately.
+        self._last_alert_key = None
+        self._last_alert_time = 0.0
+        self._alert_throttle_s = 1.0
+
         if not MSGS_OK:
             self.get_logger().error('acare_msgs not available — safety_node cannot run')
             return
@@ -92,6 +99,18 @@ class SafetyNode(Node):
             self.get_logger().warn(f'Could not load thresholds.yaml: {e} — using defaults')
 
     def _publish_alert(self, severity: str, reason: str, source: str):
+        import time
+        # ESTOP is always published immediately — never throttled.
+        # WARNING/CRITICAL for the same source are throttled to 1/sec so a
+        # sustained condition at 50Hz doesn't flood the /safety_alert topic.
+        if severity != 'ESTOP':
+            key = (severity, source)
+            now = time.monotonic()
+            if key == self._last_alert_key and (now - self._last_alert_time) < self._alert_throttle_s:
+                return
+            self._last_alert_key = key
+            self._last_alert_time = now
+
         msg = SafetyAlert()
         msg.severity = severity
         msg.reason   = reason

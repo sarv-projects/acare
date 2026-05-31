@@ -272,10 +272,15 @@ class NBVSearch:
             # Filter to requested tool class
             tool_dets = [d for d in all_dets if d['class_name'] == model_class]
 
-            # Fake check + workspace filter
-            ref_rgb   = rgb_frames[1]
-            ref_depth = depth_frames[1]
+            # Fake check + workspace filter.
+            # Pick the first NON-None frame pair as reference (padded captures
+            # can leave frames[1] as None → cv2 crash in fake_detector).
+            ref_rgb = next((f for f in rgb_frames if f is not None), None)
+            ref_depth = next((f for f in depth_frames if f is not None), None)
             valid = []
+            if ref_rgb is None or ref_depth is None:
+                # No usable frame this viewpoint — skip to next.
+                continue
             for d in tool_dets:
                 if self.fake_detector.is_fake(ref_rgb, ref_depth, d['bbox']):
                     if self.node:

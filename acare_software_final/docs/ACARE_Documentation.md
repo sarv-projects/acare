@@ -4,6 +4,43 @@
 
 ---
 
+## 0. Code Review Changelog (2026-05-30 — comprehensive line-by-line audit)
+
+A full line-by-line review found and fixed the following defects:
+
+### Safety-critical (BLOCKER)
+- **ESTOP was silently dropped from most states.** `state_manager._transition()` rejected ESTOP unless it was in the current state's allowed-transitions list — so an ESTOP alert in STANDBY/LISTENING/PROCESSING was ignored. Fixed: ESTOP and ERROR now bypass the transition table and are reachable from ANY state.
+- **Voice "stop" did not trigger ESTOP.** Keyword detection only ran on Deepgram partials; with `endpointing=15000` (15s) partials were rare. Fixed: added a final-transcript ESTOP backstop in `voice_node._on_transcript` + reduced endpointing to 300ms.
+- **Embedded interface blocked the executor.** `wait_for_server(timeout=2s)` in a callback could delay the ESTOP callback. Fixed: non-blocking `server_is_ready()`.
+
+### High
+- **Voice latency:** Deepgram `endpointing` was 15000ms (15s) → every command took 15s to finalize. Fixed to 300ms + `utterance_end_ms=1000`.
+- **Gripper guard fail-open:** lowercase "grasp"/"close" bypassed the LOGGED_OUT guard. Fixed: guard computed on upper-cased command.
+- **ESTOP latch never reset** in embedded interface — every goal rejected until restart. Fixed: cleared on recovery to STANDBY/LOGGED_OUT.
+- **Log events silently dropped:** log_node subscribed RELIABLE but planner published BEST_EFFORT (QoS mismatch). Fixed: subscribe with TOPIC_LOGGING.
+- **Log rotation could crash/fill disk** (IN-clause variable limit). Fixed: delete by timestamp cutoff.
+- **Hand tracking fed BGR to MediaPipe** (needs RGB) → degraded handover detection. Fixed: BGR→RGB conversion.
+
+### Medium
+- **State machine invalid transition** PROCESSING→ASSISTING. Fixed: added valid edges.
+- **fast_intent used `.match()`** (start-anchored) → "I would like scissors" missed. Fixed: `.search()`.
+- **alias_expansion substring match** → "youtube"→cream, "attempt"→thermometer. Fixed: word-boundary matching + removed dangerous short aliases.
+- **Planner workspace hardcoded** (±0.4) contradicting system.yaml (±0.6). Fixed: load from config.
+- **ESTOP didn't interrupt a running task thread.** Fixed: `_estop_active` event checked between phases + blocks new moves.
+- **Per-task state leaked** (height adjustment, voice confirm word). Fixed: reset at task start.
+- **NBV crash on padded None frames.** Fixed: pick first non-None reference frame.
+- **agent_schema workspace bound** ±1.0 too loose. Fixed: ±0.85 (matches 0.8m reach); IK is the real gate.
+- **log_node SQLite thread-safety** + no periodic flush + TEXT timestamp ordering. Fixed: lock + 5s flush timer + INTEGER timestamps.
+
+### Low
+- safety_node alert spam at 50Hz. Fixed: 1s throttle for WARNING/CRITICAL (ESTOP never throttled).
+- localiser div-by-zero guard on bad intrinsics. Fixed.
+- localiser single-pixel depth read missed sparse depth. Fixed: median-of-window fallback.
+
+All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ESTOP reachable from all 10 states (verified).
+
+---
+
 ## 1. Pi Credentials & Known Hosts
 
 ### Credentials
@@ -155,7 +192,7 @@
 | `agentic_planner.py` | LLM-based reasoning (NIM Nemotron-49B primary, Groq 70B fallback) |
 | `agent_schema.py` | Pydantic models for validating LLM planner output |
 | `handover.py` | 3-gate handover protocol (face + palm + voice) |
-| `ik_solver.py` | Inverse kinematics solver (placeholder DH params) |
+| `ik_solver.py` | Analytical 6-DOF inverse kinematics (geometric 2-link + spherical wrist). Loads link lengths + joint limits from system.yaml. FK/IK verified to 0.0000m. |
 | `tool_registry.py` | Canonical tool list with physical properties |
 | `__init__.py` | Package init |
 
@@ -426,30 +463,51 @@ top                      # CPU load
 ### Done ✓
 
 - All 11 ROS2 packages built and importing cleanly on Pi
-- Voice pipeline: VAD + Deepgram STT + Groq intent + Edge-TTS confirmed working
+- Voice pipeline: VAD + Deepgram STT + Groq intent + Edge-TTS confirmed working on laptop
 - Vision: YOLO26 detecting objects on Pi at ~850 ms/frame confirmed
 - Camera: HP60C RGB+Depth streaming confirmed (640×480, 12.4 Hz)
-- Auth: full biometric flow implemented, `demo_mode` bypass working
-- Embedded interface: Gazebo bridge + real-hardware stub ready
+- Camera intrinsics: real values read from /camera_info (fx=572.04, fy=571.49, cx=329.27, cy=242.09) — applied to system.yaml + localiser
+- Auth: full biometric flow implemented, `demo_mode` bypass working (auto-enrols Demo User, no camera needed)
+- Embedded interface: Gazebo bridge (FollowJointTrajectory) + real-hardware stub ready
 - State machine: 10-state FSM with all transitions
-- Safety: LiDAR + telemetry monitoring
+- Safety: LiDAR + telemetry monitoring, graded alerts
 - Logging: SQLite audit trail with batched writes
 - Bayesian probability map: persistence + clamping
-- Handover: 3-gate protocol (face + palm + voice)
-- ESTOP: <200 ms keyword detection on dedicated thread
+- Handover: 3-gate protocol (face advisory + palm + voice)
+- ESTOP: <200 ms keyword detection on dedicated thread (100 ms collision window)
+- **IK solver: full analytical 6-DOF solution implemented and tested (FK/IK round-trip error = 0.0000m)**
+- **Arm geometry confirmed: link lengths 352/400/400/236mm, all 6 joint limits set**
+- **Planner now checks IK reachability — refuses unreachable targets instead of sending clamped poses**
+- LLM allocation wired: Groq 70B dialogue, Groq 8B intent, NIM Nemotron-49B planner (Groq 70B fallback)
+- Assistant agent upgraded: dynamic time/date context, personality, edge-case handling
+- Git: secrets removed from history, .gitignore in place
 
-### Left to do ✗
+### Left to do ✗ (mostly hardware-dependent)
 
-- USB sound card for Pi mic input (3.5 mm mic won't work directly)
-- Depth localisation: sparse depth issue (likely hand-holding camera — needs stable mount)
-- Camera-to-robot extrinsics calibration (`T_robot_camera` is identity placeholder)
-- DH parameters for IK solver (placeholder zeros)
-- Teensy firmware integration (UART/CAN protocol)
+**Hardware team must provide:**
+- DH twist angles (alpha) for J4/J5/J6 — IK assumes a clean spherical wrist with vertical tool drop. If the real wrist has 90° mounting offsets, these need adding to `system.yaml` arm.dh_params.
+- Gearbox ratios for J4/J5/J6 (J2=22:1, J3=15:1 already known)
+- Teensy firmware: UART/CAN protocol for `embedded_interface_node` to talk to
 - Real arm assembly + motor wiring
-- NVIDIA NIM API key setup
-- ECAPA-TDNN ONNX export (run `export_ecapa_onnx.py` once on a dev machine)
+
+**Calibration (after arm + camera mounted):**
+- Camera-to-robot extrinsics `T_robot_camera` (still identity placeholder) — run admin.py calibrate Step 5
+- `safe_drop_zone` and `handover_zone` coordinates (currently estimated)
+- `neutral_joint_angles` (home pose)
+
+**Procurement / setup:**
+- USB sound card for Pi mic input (3.5 mm analog mic won't work on Pi directly)
+- NVIDIA NIM API key (planner falls back to Groq if absent — not blocking)
 - Production `.env` with real keys on Pi
-- Full end-to-end integration test with all nodes running simultaneously
+- ECAPA-TDNN ONNX export (run `export_ecapa_onnx.py` once on a dev machine with speechbrain)
+
+**Testing:**
+- Depth localisation re-test on a STABLE camera mount (sparse depth was from hand-holding)
+- Full end-to-end integration test with all nodes running simultaneously on Pi
+
+### Tray Placement Constraint (from IK analysis)
+
+The instrument tray must sit **0.40–0.55 m from the base**. Closer than ~0.40m forces the elbow past its -120° limit (the arm can't fold tight enough to drop the tool straight down). Max reach is 0.80m but practical top-down grasp range is 0.40–0.55m.
 
 ---
 
@@ -515,6 +573,30 @@ top                      # CPU load
 - Depth: 640×480 16UC1 @ 12.4 Hz
 - Valid depth range: 200–4000 mm
 - Real intrinsics (from driver): fx=572.04, fy=571.49, cx=329.27, cy=242.09
+
+### Arm Geometry (confirmed from CAD + hardware team)
+
+| Link | Length | Description |
+|---|---|---|
+| base_height | 352 mm | J1 axis → J2 shoulder |
+| upper_arm | 400 mm | J2 shoulder → J3 elbow |
+| forearm | 400 mm | J3 elbow → J4 wrist |
+| wrist+tool | 236 mm | J4 → tool tip (TCP) |
+
+**Max reach:** 800 mm. **Practical top-down grasp range:** 400–550 mm from base.
+
+| Joint | Limit | Gearbox |
+|---|---|---|
+| J1 base | ±180° | — |
+| J2 shoulder | ±135° | 22:1 |
+| J3 elbow | ±120° | 15:1 |
+| J4 wrist_1 | ±180° | TBD |
+| J5 wrist_2 | ±180° | TBD |
+| J6 wrist_3 | ±180° | TBD |
+
+**Motor torque requirements** (from sizing table): J1=10.5, J2=42.5, J3=54.4, J4=156.7, J5=263.65 kg·cm. J5 needs the strongest motor.
+
+**Gripper:** parallel-jaw with rubber pads, linear-actuator driven. HP60C camera mounts on top of the gripper assembly.
 
 ### Pi Setup History
 - Ubuntu Server 24.04.4 LTS (64-bit, aarch64)

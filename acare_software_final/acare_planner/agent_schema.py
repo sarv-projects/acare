@@ -81,7 +81,11 @@ class ArmMoveCommand(BaseModel):
             axis_value = getattr(self, axis_name)
             if not float("-inf") < axis_value < float("inf"):
                 raise ValueError(f"Non-finite {axis_name}: {axis_value}")
-        if not (-1.0 <= self.x <= 1.0 and -1.0 <= self.y <= 1.0 and -0.2 <= self.z <= 1.0):
+        # Coarse outer safety envelope based on the arm's 0.8 m max reach.
+        # This is a backstop only — the real per-target reachability gate is
+        # the IK solver in planner_node._send_arm_move (which loads the exact
+        # workspace from system.yaml and checks joint limits).
+        if not (-0.85 <= self.x <= 0.85 and -0.85 <= self.y <= 0.85 and -0.10 <= self.z <= 0.85):
             raise ValueError("Arm move target outside software safety envelope")
         return self
 

@@ -132,11 +132,16 @@ class StateManager(Node):
         Publishes /robot_state after every successful transition.
         Resets inactivity timer when entering STANDBY.
         """
-        allowed = VALID_TRANSITIONS.get(self.state, set())
-        if target not in allowed and target != self.state:
-            self.get_logger().error(
-                f'Invalid transition {self.state} → {target} (reason: {reason})')
-            return
+        # ESTOP and ERROR are always reachable from ANY state — safety overrides
+        # the transition table. This is non-negotiable per spec Section XIII.
+        if target in ('ESTOP', 'ERROR'):
+            pass
+        else:
+            allowed = VALID_TRANSITIONS.get(self.state, set())
+            if target not in allowed and target != self.state:
+                self.get_logger().error(
+                    f'Invalid transition {self.state} → {target} (reason: {reason})')
+                return
 
         prev = self.state
         self.state = target

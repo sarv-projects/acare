@@ -124,7 +124,15 @@ class HandTracker:
         if not MEDIAPIPE_AVAILABLE or self._hands is None:
             return msg
 
-        results = self._hands.process(rgb_frame)
+        # HP60C delivers BGR frames; MediaPipe Hands requires RGB.
+        # Convert before processing or detection is degraded/broken.
+        try:
+            import cv2
+            mp_input = cv2.cvtColor(rgb_frame, cv2.COLOR_BGR2RGB)
+        except Exception:
+            mp_input = rgb_frame
+
+        results = self._hands.process(mp_input)
         if not results.multi_hand_landmarks:
             return msg
 

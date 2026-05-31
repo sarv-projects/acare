@@ -26,11 +26,9 @@ ALIAS_MAP = {
     "ointment": "cream",
     "topical": "cream",
     "the cream": "cream",
-    "tube": "cream",
 
     # Scissors aliases
     "scissors": "scissors",
-    "cuts": "scissors",
     "cutting tool": "scissors",
     "snips": "scissors",
     "medical scissors": "scissors",
@@ -43,11 +41,9 @@ ALIAS_MAP = {
     "grasper": "forceps",
     "surgical forceps": "forceps",
     "tweezers": "forceps",
-    "clamps": "forceps",
 
     # Thermometer aliases
     "thermometer": "thermometer",
-    "temp": "thermometer",
     "temperature": "thermometer",
     "temp probe": "thermometer",
 
@@ -60,7 +56,6 @@ ALIAS_MAP = {
 
     # Plaster aliases
     "plaster": "plaster",
-    "cast": "plaster",
     "band aid": "plaster",
     "bandaid": "plaster",
     "adhesive strip": "plaster",
@@ -84,24 +79,31 @@ AMBIGUOUS_ALIASES = {
 def detect_aliases_in_transcript(transcript: str) -> List[Tuple[str, str]]:
     """
     Find all aliases mentioned in the transcript.
-    
+
     Returns:
         List of (alias_phrase, canonical_tool) tuples found in transcript
-        Example: [("sharp one", "scalpel"), ("cutting tool", "scissors")]
-    
-    NOTE: Returns first match for each alias phrase detected.
-    Does NOT filter ambiguous aliases - caller must check.
+
+    Uses WORD-BOUNDARY matching so short aliases don't match inside other
+    words (e.g. "tube" must not match "youtube", "temp" must not match
+    "attempt", "cuts" must not match "haircuts").
+
+    When multiple aliases map to the SAME canonical tool (e.g. "scissors"
+    and "cuts" both → scissors), only one entry per canonical tool is kept,
+    so it's not falsely treated as ambiguous.
     """
-    found_aliases = []
+    found_by_canonical: Dict[str, str] = {}
     transcript_lower = transcript.lower()
-    
-    # Check each alias in the map
+
     for alias_phrase, canonical_tool in ALIAS_MAP.items():
-        # Simple substring matching (case-insensitive)
-        if alias_phrase in transcript_lower:
-            found_aliases.append((alias_phrase, canonical_tool))
-    
-    return found_aliases
+        # Word-boundary match — alias must appear as whole word(s).
+        if re.search(r"\b" + re.escape(alias_phrase) + r"\b", transcript_lower):
+            # Keep the first (longest match wins via dict insertion order
+            # since longer phrases tend to be more specific). Only one per
+            # canonical tool.
+            if canonical_tool not in found_by_canonical:
+                found_by_canonical[canonical_tool] = alias_phrase
+
+    return [(alias, canonical) for canonical, alias in found_by_canonical.items()]
 
 
 def is_ambiguous_alias(alias_phrase: str) -> bool:
@@ -192,7 +194,13 @@ def expand_aliases(transcript: str) -> Tuple[str, Optional[str], bool]:
     
     # Single, unambiguous alias → expand it
     print(f"[ALIAS_EXPANSION] Alias expanded: '{alias_phrase}' -> '{canonical_tool}'")
-    modified_transcript = transcript.replace(alias_phrase, canonical_tool)
+    # Word-boundary replace so we don't corrupt substrings.
+    modified_transcript = re.sub(
+        r"\b" + re.escape(alias_phrase) + r"\b",
+        canonical_tool,
+        transcript,
+        flags=re.IGNORECASE,
+    )
     return (modified_transcript, canonical_tool, False)
 
 
