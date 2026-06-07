@@ -14,10 +14,14 @@ venv/
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / tool config
 .vscode/
 .idea/
 .continue/
+.commandcode/
+.kiro/
+.qoder/
+.omo/
 
 # Build artifacts
 build/
