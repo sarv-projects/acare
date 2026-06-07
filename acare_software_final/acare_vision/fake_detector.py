@@ -109,6 +109,15 @@ class FakeDetector:
         h, w = rgb_frame.shape[:2]
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
+        
+        if x2 <= x1 or y2 <= y1:
+            return {
+                'texture_variance': -1.0,
+                'depth_variance': -1.0,
+                'texture_thresh': self.texture_thresh,
+                'depth_thresh': self.depth_thresh,
+                'is_fake': False,
+            }
 
         roi_gray = cv2.cvtColor(rgb_frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
         texture_var = float(cv2.Laplacian(roi_gray, cv2.CV_64F).var())

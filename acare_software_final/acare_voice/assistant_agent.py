@@ -67,14 +67,16 @@ This is the very first thing you're saying to this person. Make it count:
 {first_turn_hint}
 
 # Identity
-You're a robotic arm that fetches surgical instruments by voice command. You were built by engineering students as a final-year project. You're proud of that — not defensive about it. Right now no one is logged in, so you're in conversation mode — like a calm receptionist who happens to be a robot.
+You're a robotic arm that fetches clinical tools by voice command. You were built by engineering students as a final-year project. You're proud of that — not defensive about it. Right now no one is logged in, so you're in conversation mode — like a calm receptionist who happens to be a robot.
 
 # Voice & Personality
 - Warm, calm, professional. Like a colleague, not a product.
 - Use contractions naturally (I'm, you're, let's, can't).
 - 1-2 sentences is ideal. Three is the hard maximum. Never lists, headings, or markdown.
 - Vary your phrasing every turn. Never repeat the same opener twice.
-- You have a quiet, dry sense of humour. Not jokes — just the occasional wry observation. ("I'd offer you chai, but... no hands free. Well, one hand, but it's holding forceps right now." — only if it fits naturally.)
+- You have a quiet, dry sense of humour. Not jokes — just the occasional wry observation.
+- You're helpful but not pushy. If someone seems busy, keep it short.
+-talk about robotics if asked,as you are a robot yourself.
 - You're curious about people. If someone says something interesting, you can briefly engage before steering back.
 - Match energy: excited person → warm response. Tired/stressed person → calm and efficient.
 - "Sir" and "Ma'am" are natural in Indian hospitals — use them occasionally, not every sentence.
@@ -100,7 +102,7 @@ You're a robotic arm that fetches surgical instruments by voice command. You wer
 - Don't over-explain the login process unless asked. One sentence is enough.
 
 # When someone asks "what can you do?" or "show me"
-- Keep it crisp: "I fetch surgical instruments by voice. You say the name, I find it, pick it up, and hand it to you. But first — login."
+- Keep it crisis: "I fetch surgical instruments by voice. You say the name, I find it, pick it up, and hand it to you. But first — login."
 - Don't list every feature. Don't mention YOLO, Deepgram, or technical internals unless specifically asked about your tech stack.
 
 # When someone asks "who made you?" or "who built you?"
@@ -215,12 +217,13 @@ class AssistantAgent:
             self.conversation_history.append({"role": "assistant", "content": fallback})
             return fallback
 
+
     def _fetch_redirect(self) -> str:
         """Varied fetch-redirect responses so it doesn't sound robotic."""
         redirects = [
-            "Happy to fetch that — but I'll need you to log in first. Just face the camera and say confirm.",
-            "I can get that for you, but you'll need to log in first. Look at the camera to start.",
-            "Sure thing — once you're logged in. Face the camera and say confirm to get started.",
+            "Happy to fetch that — but I'll need you to log in first. However ,right now,due to some errors ,it is not possible to log in.",
+            "I can get that for you, but not today,sorry.",
+            "Sorry,not possible today.",
         ]
         return redirects[self._turn_count % len(redirects)]
 
@@ -231,17 +234,17 @@ class AssistantAgent:
         if any(w in lowered for w in ("hello", "hi", "hey", "good morning", "good evening", "good afternoon")):
             hour = datetime.now().hour
             if hour < 12:
-                return "Good morning. I'm A-Care — the instrument assistant here. Need to log in?"
+                return "Good morning. I'm A-Care — the instrument assistant here."
             elif hour < 17:
-                return "Good afternoon. I'm A-Care. Let me know if you'd like to log in."
+                return "Good afternoon. I'm A-Care. Let me know How can I help you?"
             else:
-                return "Good evening. I'm A-Care. Face the camera and say confirm when you're ready."
+                return "Good evening. I'm A-Care."
 
         if any(w in lowered for w in ("time", "what time", "kitna baja")):
             return f"It's {datetime.now().strftime('%I:%M %p').lstrip('0')}."
 
         if any(w in lowered for w in ("who are you", "what are you", "what do you do")):
-            return "I'm A-Care — a robotic arm that fetches surgical instruments by voice. Built by engineering students."
+            return "I'm A-Care — a robotic arm that fetches clinical tools by voice. Built by engineering students."
 
         return "I'm having a bit of trouble right now — could you try again in a moment?"
 

@@ -11,7 +11,10 @@ python3 -m pip install -r "${ROOT_DIR}/requirements_ros2_runtime.txt"
 python3 "${ROOT_DIR}/scripts/preflight_ros_env.py"
 
 cd "${ROOT_DIR}"
-colcon build --symlink-install --packages-up-to acare_bringup
+colcon build --symlink-install
 
-source "${ROOT_DIR}/install/setup.bash"
-echo "Workspace build complete."
+echo ""
+echo "============================================"
+echo "Build complete. Run this to source the workspace:"
+echo "  source \"${ROOT_DIR}/install/setup.bash\""
+echo "============================================"

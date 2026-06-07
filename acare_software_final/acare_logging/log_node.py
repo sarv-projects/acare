@@ -32,7 +32,7 @@ BATCH_SIZE  = 10
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS events (
     event_id         TEXT PRIMARY KEY,
-    timestamp        TEXT,
+    timestamp        INTEGER,
     staff_id         TEXT,
     event_type       TEXT,
     tool             TEXT,

@@ -108,6 +108,7 @@ def cmd_set_api_key(args):
     keys = {}
     if API_KEYS_PATH.exists():
         keys = yaml.safe_load(API_KEYS_PATH.read_text()) or {}
+
     keys[args.service] = f.encrypt(args.key.encode()).decode()
     API_KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
     API_KEYS_PATH.write_text(yaml.dump(keys))
@@ -124,14 +125,19 @@ def cmd_set_threshold(args):
     if args.sensor not in sensor_map:
         print(f'Unknown sensor. Valid options: {list(sensor_map.keys())}')
         return
-    with open(THRESHOLDS) as f:
-        cfg = yaml.safe_load(f)
+    import re
+    try:
+        content = open(THRESHOLDS).read()
+    except FileNotFoundError:
+        content = ""
     section, key = sensor_map[args.sensor]
-    old = cfg[section].get(key, 'unknown')
-    cfg[section][key] = float(args.value)
+    new_content, count = re.subn(fr"^(\s*{key}\s*:\s*)([\d\.]+)", rf"\g<1>{args.value}", content, flags=re.MULTILINE)
+    if count == 0:
+        new_content = content.rstrip() + f"\n{key}: {args.value}\n"
     with open(THRESHOLDS, 'w') as f:
-        yaml.dump(cfg, f)
-    print(f'Threshold {args.sensor} ({key}): {old} → {args.value}')
+        f.write(new_content)
+    print(f'Threshold {args.sensor} ({key}) set to {args.value}')
+
 
 
 def cmd_show_logs(args):
@@ -201,16 +207,21 @@ def cmd_status(args):
 
 def cmd_demo_mode(args):
     """Enables or disables demo mode (disables biometric checks)."""
-    with open(SYSTEM_YAML) as f:
-        cfg = yaml.safe_load(f)
-    cfg['demo_mode'] = args.enable
+    import re
+    try:
+        content = open(SYSTEM_YAML).read()
+    except FileNotFoundError:
+        content = "demo_mode: false\n"
+    new_val = "true" if args.enable else "false"
+    new_content, count = re.subn(r"^(demo_mode\s*:\s*)(true|false)", rf"\g<1>{new_val}", content, flags=re.MULTILINE)
+    if count == 0:
+        new_content = content.rstrip() + f"\ndemo_mode: {new_val}\n"
     with open(SYSTEM_YAML, 'w') as f:
-        yaml.dump(cfg, f)
+        f.write(new_content)
     state = 'ENABLED' if args.enable else 'DISABLED'
     print(f'Demo mode {state}.')
     if args.enable:
         print('WARNING: Biometric checks are disabled in demo mode.')
-
 
 def cmd_calibrate(args):
     """

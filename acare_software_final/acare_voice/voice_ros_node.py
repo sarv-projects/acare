@@ -11,7 +11,15 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from acare_msgs.msg import EmergencySignal, SafetyAlert, Transcript
+from acare_msgs.msg import EmergencySignal, SafetyAlert, Transcript, RobotState, StateTransition
+from acare_bringup.constants import ESTOP_KEYWORDS
+from acare_bringup.qos_profiles import (
+    TOPIC_ESTOP,
+    TOPIC_STATE,
+    TOPIC_TTS,
+    TOPIC_VOICE_PIPELINE,
+)
+from .state_manager import get_state_manager
 
 
 class VoiceNodeROS(Node):
@@ -21,10 +29,20 @@ class VoiceNodeROS(Node):
 
     def __init__(self):
         super().__init__("voice_node")
-        self.raw_pub = self.create_publisher(Transcript, "/raw_transcript", 10)
-        self.tts_sub = self.create_subscription(String, "/tts_request", self._on_tts, 10)
-        self.estop_pub = self.create_publisher(EmergencySignal, "/emergency_stop", 10)
-        self.alert_pub = self.create_publisher(SafetyAlert, "/safety_alert", 10)
+        self.raw_pub = self.create_publisher(Transcript, "/raw_transcript", TOPIC_VOICE_PIPELINE)
+        self.tts_sub = self.create_subscription(String, "/tts_request", self._on_tts, TOPIC_TTS)
+        self.estop_pub = self.create_publisher(EmergencySignal, "/emergency_stop", TOPIC_ESTOP)
+        self.alert_pub = self.create_publisher(SafetyAlert, "/safety_alert", TOPIC_STATE)
+        self.state_sub = self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE)
+        
+        # State transition publisher for syncing voice FSM → ROS2 FSM
+        self.transition_pub = self.create_publisher(StateTransition, "/state_transition", TOPIC_STATE)
+        
+        self._robot_state = "LOGGED_OUT"
+
+        # Wire up dual state machine sync bridge
+        self._state_manager = get_state_manager()
+        self._state_manager.set_transition_publisher(self._publish_state_transition)
 
         self._audio_stack_ready = False
         self._startup_error = ""
@@ -37,6 +55,13 @@ class VoiceNodeROS(Node):
         self._pending_transcripts: Deque[tuple[int, str]] = deque()
         self.create_timer(0.25, self._flush_stale_pairs)
         self._start_audio_stack()
+
+    def _publish_state_transition(self, target_state: str, reason: str):
+        """Publish state transition to ROS2 FSM (called by voice state manager)."""
+        msg = StateTransition()
+        msg.target_state = target_state
+        msg.reason = reason
+        self.transition_pub.publish(msg)
 
     def _start_audio_stack(self):
         try:
@@ -80,9 +105,15 @@ class VoiceNodeROS(Node):
             self._drain_pairs_locked()
 
     def _on_transcript(self, text: str):
+        if self._robot_state == "ESTOP":
+            return
         text = (text or "").strip()
         if not text:
             return
+            
+        if self._check_estop_in_final(text):
+            return
+            
         ts_ms = int(time.time() * 1000)
         with self._pair_lock:
             self._pending_transcripts.append((ts_ms, text))
@@ -110,6 +141,18 @@ class VoiceNodeROS(Node):
                 self._publish_turn(text, transcript_ts, None)
             while self._pending_audio and (now_ms - self._pending_audio[0][0]) >= self.AUDIO_PAIRING_WINDOW_MS:
                 self._pending_audio.popleft()
+
+    def _check_estop_in_final(self, text: str) -> bool:
+        lowered = text.lower().strip()
+        words = [w.strip(".,!?;:'\"") for w in lowered.split()]
+        if not words:
+            return False
+        for kw in ESTOP_KEYWORDS:
+            if kw in words:
+                if len(words) <= 2:
+                    self._on_estop_keyword(kw)
+                    return True
+        return False
 
     def _publish_turn(self, text: str, ts_ms: int, audio_np: np.ndarray | None):
         msg = Transcript()
@@ -144,9 +187,20 @@ class VoiceNodeROS(Node):
         alert.reason = estop.reason
         alert.source = estop.source
         self.alert_pub.publish(alert)
+        
+        if self._tts is not None:
+            self._tts.speak_urgent(f"Emergency stop. Keyword detected: {keyword}.")
 
     def _on_resume_keyword(self, _keyword: str):
         self.get_logger().info("Resume keyword detected")
+
+    def _on_robot_state(self, msg: RobotState):
+        self._robot_state = msg.state
+        # Sync voice FSM from ROS2 state
+        if hasattr(self, '_state_manager'):
+            self._state_manager.sync_from_ros2_state(msg.state)
+        if msg.state == "ESTOP" and self._tts is not None:
+            self._tts.trigger_barge_in()
 
     def destroy_node(self):
         self._running = False

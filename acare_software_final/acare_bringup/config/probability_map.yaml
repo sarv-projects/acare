@@ -2,7 +2,7 @@
 # All values clamped to [0.05, 0.90] after every Bayesian update.
 # Edit before a demo to reflect expected tool positions on the tray.
 #
-# Classes match trained YOLOv11 model (6 classes):
+# Classes match trained YOLO26 model (6 classes):
 #   cream, medical scissors, oxymeter, plaster, surgical forceps, thermometer
 
 zone_A:   # left side of tray

@@ -51,8 +51,7 @@ async def _save_edge_tts(text, voice, tmp_path):
 def _speak_edge_tts(text: str) -> bool:
     try:
         _init_pygame()
-        # en-US-AvaNeural (Neutral Robot)
-        voice = "en-US-AvaNeural"
+        voice = "en-IN-NeerjaNeural"
         
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             tmp_path = f.name

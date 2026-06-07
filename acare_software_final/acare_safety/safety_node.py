@@ -11,6 +11,10 @@
 #   CRITICAL — reduce velocity 50%, continue task
 #   ESTOP    — immediate stop, safe deposit if holding
 #
+# CAUTION: Software-only ESTOPs over a ROS2 network with Python GIL latency 
+# are critically unviable for real-world surgical robots. A hardwired physical 
+# ESTOP circuit MUST be implemented for ISO medical compliance.
+#
 # Thresholds loaded from thresholds.yaml.
 # All threshold values are non-negotiable per spec.
 #
@@ -22,6 +26,8 @@
 # Known limitation: LiDAR at 80cm height detects torso only.
 # A hand entering from below is not detected.
 
+import time
+import threading
 import yaml
 import rclpy
 from rclpy.node import Node
@@ -60,31 +66,37 @@ class SafetyNode(Node):
 
     Uses BEST_EFFORT QoS for sensor data (always use latest, drop stale).
     Uses RELIABLE QoS for safety alerts (must be delivered).
+
+    Recovery: a periodic timer checks if all safety conditions have cleared
+    and publishes an OK alert so downstream nodes know the danger has passed.
     """
+
+    RECOVERY_CHECK_PERIOD_S = 2.0
+    RECOVERY_QUIET_PERIOD_S = 5.0
 
     def __init__(self):
         super().__init__('safety_node')
         self.T = dict(DEFAULTS)
         self._load_thresholds()
 
-        # Alert throttle: suppress identical (severity, source) alerts within
-        # this window so a sustained condition at 50Hz doesn't flood the topic.
-        # ESTOP is NEVER throttled — every ESTOP is published immediately.
-        self._last_alert_key = None
-        self._last_alert_time = 0.0
+        self._last_alert_times = {}
         self._alert_throttle_s = 1.0
+
+        self._active_conditions: dict[str, float] = {}
+        self._lock = threading.Lock()
 
         if not MSGS_OK:
             self.get_logger().error('acare_msgs not available — safety_node cannot run')
             return
 
-        # RELIABLE QoS for alerts — must not be dropped
         self.alert_pub = self.create_publisher(SafetyAlert, '/safety_alert', TOPIC_STATE)
 
         self.create_subscription(LaserScan, '/scan',
                                  self._on_lidar, TOPIC_SENSOR)
         self.create_subscription(MotionFeedback, '/motion_feedback',
                                  self._on_telemetry, TOPIC_SENSOR)
+
+        self._recovery_timer = self.create_timer(self.RECOVERY_CHECK_PERIOD_S, self._check_recovery)
 
         self.get_logger().info('Safety node ready')
 
@@ -94,22 +106,32 @@ class SafetyNode(Node):
         try:
             with open(THRESHOLDS_PATH) as f:
                 cfg = yaml.safe_load(f)
-            self.T.update(cfg.get('safety', {}))
+            loaded = cfg.get('safety', {})
+            for key, expected_type in [('current_limit_A', (int, float)), ('current_warning_A', (int, float)),
+                                        ('temperature_estop_C', (int, float)), ('temperature_slow_C', (int, float)),
+                                        ('temperature_warning_C', (int, float)), ('lidar_caution_mm', (int, float)),
+                                        ('lidar_stop_mm', (int, float)), ('gripper_force_limit_N', (int, float)),
+                                        ('gripper_force_warning_N', (int, float))]:
+                if key in loaded and not isinstance(loaded[key], expected_type):
+                    self.get_logger().warn(f'thresholds.yaml: {key} has wrong type ({type(loaded[key]).__name__}), skipping')
+                    del loaded[key]
+            self.T.update(loaded)
         except Exception as e:
             self.get_logger().warn(f'Could not load thresholds.yaml: {e} — using defaults')
 
-    def _publish_alert(self, severity: str, reason: str, source: str):
-        import time
-        # ESTOP is always published immediately — never throttled.
-        # WARNING/CRITICAL for the same source are throttled to 1/sec so a
-        # sustained condition at 50Hz doesn't flood the /safety_alert topic.
+    def _publish_alert(self, severity: str, reason: str, source: str, condition_key: str = ''):
+        if not condition_key:
+            condition_key = (severity, source)
+
         if severity != 'ESTOP':
-            key = (severity, source)
             now = time.monotonic()
-            if key == self._last_alert_key and (now - self._last_alert_time) < self._alert_throttle_s:
+            last = self._last_alert_times.get(condition_key, 0.0)
+            if (now - last) < self._alert_throttle_s:
                 return
-            self._last_alert_key = key
-            self._last_alert_time = now
+            self._last_alert_times[condition_key] = now
+
+        with self._lock:
+            self._active_conditions[condition_key] = time.monotonic()
 
         msg = SafetyAlert()
         msg.severity = severity
@@ -117,6 +139,22 @@ class SafetyNode(Node):
         msg.source   = source
         self.alert_pub.publish(msg)
         self.get_logger().warn(f'[{severity}] {source}: {reason}')
+
+    def _check_recovery(self):
+        now = time.monotonic()
+        with self._lock:
+            expired = [k for k, t in self._active_conditions.items()
+                       if (now - t) > self.RECOVERY_QUIET_PERIOD_S]
+            for k in expired:
+                del self._active_conditions[k]
+
+            if expired and not self._active_conditions:
+                msg = SafetyAlert()
+                msg.severity = 'OK'
+                msg.reason = 'All safety conditions cleared'
+                msg.source = 'safety_node'
+                self.alert_pub.publish(msg)
+                self.get_logger().info('[OK] All safety conditions cleared')
 
     def _on_lidar(self, msg: LaserScan):
         """
@@ -137,12 +175,12 @@ class SafetyNode(Node):
 
         min_dist_mm = min(valid) * 1000.0   # metres → mm
 
-        if min_dist_mm < self.T['lidar_stop_mm']:
+        if min_dist_mm <= self.T['lidar_stop_mm']:
             self._publish_alert(
                 'ESTOP',
                 f'Person {min_dist_mm:.0f}mm from robot (limit: {self.T["lidar_stop_mm"]}mm)',
                 'lidar')
-        elif min_dist_mm < self.T['lidar_caution_mm']:
+        elif min_dist_mm <= self.T['lidar_caution_mm']:
             self._publish_alert(
                 'WARNING',
                 f'Person {min_dist_mm:.0f}mm — reduced speed',
@@ -152,49 +190,54 @@ class SafetyNode(Node):
         """
         Checks MCU telemetry at 50Hz for safety threshold violations.
         Checks: joint currents, joint temperatures, gripper force.
+        Each joint gets its own throttle key to avoid cross-joint suppression.
         """
-        # Joint currents
         for i, curr in enumerate(msg.joint_currents):
             if curr > self.T['current_limit_A']:
                 self._publish_alert(
                     'ESTOP',
                     f'Joint {i+1} overcurrent {curr:.1f}A (limit: {self.T["current_limit_A"]}A)',
-                    'current')
+                    'current',
+                    condition_key=f'estop_current_j{i+1}')
             elif curr > self.T['current_warning_A']:
                 self._publish_alert(
                     'WARNING',
                     f'Joint {i+1} current {curr:.1f}A',
-                    'current')
+                    'current',
+                    condition_key=f'warning_current_j{i+1}')
 
-        # Joint temperatures
         for i, temp in enumerate(msg.temperatures):
             if temp > self.T['temperature_estop_C']:
                 self._publish_alert(
                     'ESTOP',
                     f'Joint {i+1} overtemp {temp:.1f}°C (limit: {self.T["temperature_estop_C"]}°C)',
-                    'temp')
+                    'temp',
+                    condition_key=f'estop_temp_j{i+1}')
             elif temp > self.T['temperature_slow_C']:
                 self._publish_alert(
                     'CRITICAL',
                     f'Joint {i+1} temp {temp:.1f}°C — thermal limit approaching',
-                    'temp')
+                    'temp',
+                    condition_key=f'critical_temp_j{i+1}')
             elif temp > self.T['temperature_warning_C']:
                 self._publish_alert(
                     'WARNING',
                     f'Joint {i+1} temp {temp:.1f}°C',
-                    'temp')
+                    'temp',
+                    condition_key=f'warning_temp_j{i+1}')
 
-        # Gripper force
         if msg.gripper_force > self.T['gripper_force_limit_N']:
             self._publish_alert(
                 'ESTOP',
                 f'Gripper force spike {msg.gripper_force:.1f}N (limit: {self.T["gripper_force_limit_N"]}N)',
-                'gripper')
+                'gripper',
+                condition_key='estop_gripper')
         elif msg.gripper_force > self.T['gripper_force_warning_N']:
             self._publish_alert(
                 'WARNING',
                 f'Gripper force {msg.gripper_force:.1f}N',
-                'gripper')
+                'gripper',
+                condition_key='warning_gripper')
 
 
 def main(args=None):

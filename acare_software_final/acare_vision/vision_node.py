@@ -40,6 +40,13 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
 from acare_bringup.paths import MODEL_DIR
+from acare_bringup.qos_profiles import (
+    TOPIC_VISION,
+    TOPIC_STATE,
+    TOPIC_COMMAND,
+    TOPIC_SENSOR,
+    TOPIC_LOGGING,
+)
 
 try:
     from acare_msgs.msg import (
@@ -52,7 +59,7 @@ except ImportError:
 
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
-from .yolo_infer import YOLOv11ONNX
+from .yolo_infer import YOLO26ONNX
 from .nbv_search import NBVSearch
 from .fake_detector import FakeDetector
 from .localiser import Localiser
@@ -90,11 +97,11 @@ class VisionNode(Node):
         self._last_camera_health_state = ""
 
         # --- Publishers ---
-        self.status_pub = self.create_publisher(VisionStatus, '/vision_status', 10)
+        self.status_pub = self.create_publisher(VisionStatus, '/vision_status', TOPIC_VISION)
         if ACARE_MSGS_AVAILABLE:
-            self.result_pub = self.create_publisher(VisionResult, '/vision_result', 10)
-            self.hand_pub   = self.create_publisher(HandStatus,   '/hand_status',   10)
-            self.log_pub    = self.create_publisher(LogEvent,     '/log_event',     10)
+            self.result_pub = self.create_publisher(VisionResult, '/vision_result', TOPIC_VISION)
+            self.hand_pub   = self.create_publisher(HandStatus,   '/hand_status',   TOPIC_VISION)
+            self.log_pub    = self.create_publisher(LogEvent,     '/log_event',     TOPIC_LOGGING)
         else:
             self.result_pub = self.hand_pub = self.log_pub = None
             self.get_logger().warn('acare_msgs not built — running in standalone test mode')
@@ -103,13 +110,13 @@ class VisionNode(Node):
         if ACARE_MSGS_AVAILABLE:
             self.create_subscription(
                 VisionSearchRequest, '/vision_search_request',
-                self._on_search_request, 10)
+                self._on_search_request, TOPIC_VISION)
             self.create_subscription(
                 RobotState, '/robot_state',
-                self._on_robot_state, 10)
+                self._on_robot_state, TOPIC_STATE)
             self.create_subscription(
                 MotionFeedback, '/motion_feedback',
-                self._on_motion_feedback, 10)
+                self._on_motion_feedback, TOPIC_SENSOR)
 
         # Publish LOADING immediately so planner knows we're starting
         self._publish_status('LOADING')
@@ -128,19 +135,20 @@ class VisionNode(Node):
         Runs in a background thread so ROS2 stays alive during load.
         """
         try:
-            self.yolo      = YOLOv11ONNX(MODEL_PATH, conf_thresh=CONF_THRESH)
+            self.yolo      = YOLO26ONNX(MODEL_PATH, conf_thresh=CONF_THRESH)
             self.localiser = Localiser()
-            self.camera    = HP60CCameraNode.__new__(HP60CCameraNode)
+
             # Initialise camera node as a component (shares this node's executor)
             # by subscribing to ascamera topics directly
             self._init_camera_subscriptions()
 
-            self.nbv       = NBVSearch(self.yolo, self)
+            self.nbv       = NBVSearch(self.yolo, self, localiser=self.localiser)
             self.hand_tracker = HandTracker(
                 localiser=self.localiser,
                 camera=self.camera,
                 hand_pub=self.hand_pub,
                 logger=self.get_logger(),
+                arm_link_lengths=self.nbv.arm_link_lengths,
             )
             self._yolo_ready = True
             self._publish_status('READY')
@@ -230,23 +238,23 @@ class VisionNode(Node):
         self.create_subscription(
             Image,
             '/ascamera_hp60c/camera_publisher/rgb0/image',
-            on_rgb, 10)
+            on_rgb, TOPIC_SENSOR)
         self.create_subscription(
             Image,
             '/ascamera_hp60c/camera_publisher/depth0/image_raw',
-            on_depth, 10)
+            on_depth, TOPIC_SENSOR)
         self.create_subscription(
             CameraInfo,
             '/ascamera_hp60c/camera_publisher/rgb0/camera_info',
-            on_rgb_info, 10)
+            on_rgb_info, TOPIC_SENSOR)
         self.create_subscription(
             CameraInfo,
             '/ascamera_hp60c/camera_publisher/depth0/camera_info',
-            on_depth_info, 10)
+            on_depth_info, TOPIC_SENSOR)
         self.create_subscription(
             PointCloud2,
             '/ascamera_hp60c/camera_publisher/depth0/points',
-            on_points, 10)
+            on_points, TOPIC_SENSOR)
 
         # Expose capture() on self so sub-modules can call self.camera.capture()
         node_self = self
@@ -255,6 +263,9 @@ class VisionNode(Node):
             def capture(self):
                 with node_self._cam_lock:
                     if node_self._latest_rgb is None or node_self._latest_depth is None:
+                        return None, None
+                    # Ensure frames were received within 100ms of each other to prevent lunges
+                    if abs(node_self._last_rgb_at - node_self._last_depth_at) > 0.1:
                         return None, None
                     return node_self._latest_rgb.copy(), node_self._latest_depth.copy()
 
@@ -275,6 +286,26 @@ class VisionNode(Node):
                     }
 
         self.camera = _CameraProxy()
+
+    def _is_demo_mode(self) -> bool:
+        """Returns True if demo_mode: true is set in system.yaml."""
+        try:
+            import yaml
+            from acare_bringup.paths import SYSTEM_YAML
+            with open(SYSTEM_YAML, 'r', encoding='utf-8') as f:
+                cfg = yaml.safe_load(f) or {}
+            return bool(cfg.get('demo_mode', False))
+        except Exception:
+            return False
+
+    def _camera_is_streaming(self) -> bool:
+        """Returns True if camera frames have arrived in the last 3 seconds."""
+        if not hasattr(self, '_last_rgb_at') or not hasattr(self, '_cam_lock'):
+            return False
+        with self._cam_lock:
+            if not self._last_rgb_at:
+                return False
+            return (time.monotonic() - self._last_rgb_at) < 3.0
 
     def _camera_health_tick(self):
         now = time.monotonic()
@@ -324,6 +355,7 @@ class VisionNode(Node):
             if future.done():
                 return future.result()
             time.sleep(0.05)
+        future.cancel()
         return None
 
     def _start_camera_control_probe(self):
@@ -334,7 +366,8 @@ class VisionNode(Node):
 
     def _probe_and_apply_camera_controls(self):
         try:
-            client = AsyncParameterClient(self, '/ascamera_hp60c')
+            self._async_client = getattr(self, '_async_client', None) or AsyncParameterClient(self, '/ascamera_hp60c')
+            client = self._async_client
             deadline = time.monotonic() + 12.0
             while time.monotonic() < deadline:
                 if client.service_is_ready():
@@ -407,6 +440,10 @@ class VisionNode(Node):
             if msg.state == 'HANDOVER' and self.mode != 'HANDOVER':
                 self.mode = 'HANDOVER'
                 if self._yolo_ready:
+                    # Provide the arm's current joint angles so that
+                    # pixel_to_robot() uses the correct wrist-camera transform.
+                    if hasattr(self, '_last_joint_positions') and self._last_joint_positions:
+                        self.hand_tracker.set_viewpoint_joints(self._last_joint_positions)
                     self.hand_tracker.start()
                     self.get_logger().info('Vision: switched to HANDOVER mode')
             elif msg.state != 'HANDOVER' and self.mode == 'HANDOVER':
@@ -442,18 +479,55 @@ class VisionNode(Node):
         """
         Runs NBV search and publishes the result.
         Called in a background thread.
+
+        In simulation/demo mode (demo_mode: true in system.yaml), if no real
+        camera frames are arriving, returns a scripted detection so the full
+        pipeline can be demonstrated without real hardware. The arm will move
+        to a fixed pre-grasp position on the tray.
         """
         start_time = time.monotonic()
 
-        try:
-            result_dict = self.nbv.search(tool_name, self.camera)
-        except Exception as e:
-            self.get_logger().error(f'NBV search error: {e}')
-            result_dict = {'found': False, 'tool': tool_name,
-                           'x': 0.0, 'y': 0.0, 'z': 0.0,
-                           'confidence': 0.0, 'zone': '', 'candidates': []}
+        # --- Simulation bypass ---
+        # If demo_mode is enabled AND no camera is streaming (Gazebo sim or
+        # bench test), return a scripted result so the planner can complete
+        # the full task without real object detection.
+        if self._is_demo_mode() and not self._camera_is_streaming():
+            self.get_logger().info(
+                f'Vision: DEMO MODE — returning scripted detection for {tool_name}')
+            # Fixed tray position — 45cm in front, centred, 5cm above surface.
+            # Adjust x/y/z to match your actual tray placement.
+            SCRIPTED_POSITIONS = {
+                'cream':            (0.45, -0.10, 0.05),
+                'medical scissors': (0.45,  0.00, 0.05),
+                'oxymeter':         (0.45,  0.10, 0.05),
+                'plaster':          (0.50, -0.10, 0.05),
+                'surgical forceps': (0.50,  0.00, 0.05),
+                'thermometer':      (0.50,  0.10, 0.05),
+                # Alias matches
+                'scissors':         (0.45,  0.00, 0.05),
+                'forceps':          (0.50,  0.00, 0.05),
+                'oximeter':         (0.45,  0.10, 0.05),
+            }
+            pos = SCRIPTED_POSITIONS.get(tool_name.lower(), (0.45, 0.0, 0.05))
+            result_dict = {
+                'found': True,
+                'tool': tool_name,
+                'x': pos[0], 'y': pos[1], 'z': pos[2],
+                'confidence': 0.95,
+                'zone': 'zone_B',
+                'candidates': [],
+            }
+            search_ms = int((time.monotonic() - start_time) * 1000)
+        else:
+            try:
+                result_dict = self.nbv.search(tool_name, self.camera)
+            except Exception as e:
+                self.get_logger().error(f'NBV search error: {e}')
+                result_dict = {'found': False, 'tool': tool_name,
+                               'x': 0.0, 'y': 0.0, 'z': 0.0,
+                               'confidence': 0.0, 'zone': '', 'candidates': []}
+            search_ms = int((time.monotonic() - start_time) * 1000)
 
-        search_ms = int((time.monotonic() - start_time) * 1000)
         self.get_logger().info(
             f'Vision: search complete — found={result_dict["found"]} '
             f'tool={tool_name} zone={result_dict["zone"]} '
@@ -471,6 +545,15 @@ class VisionNode(Node):
             msg.zone       = result_dict['zone']
             msg.candidates_json = list(result_dict.get('candidates', []))
             self.result_pub.publish(msg)
+
+            if self.log_pub:
+                log_msg = LogEvent()
+                log_msg.event_type = 'VISION_SEARCH'
+                log_msg.tool = tool_name
+                log_msg.description = f"Found in {result_dict['zone']}" if result_dict['found'] else "Tool not found"
+                log_msg.vision_search_ms = search_ms
+                log_msg.timestamp = int(time.time())
+                self.log_pub.publish(log_msg)
 
         with self._mode_lock:
             self.mode = 'IDLE'
@@ -495,7 +578,7 @@ class VisionNode(Node):
         try:
             from acare_msgs.msg import ArmCommand
             if not hasattr(self, '_arm_cmd_pub'):
-                self._arm_cmd_pub = self.create_publisher(ArmCommand, '/arm_command', 10)
+                self._arm_cmd_pub = self.create_publisher(ArmCommand, '/arm_command', TOPIC_COMMAND)
 
             cmd = ArmCommand()
             cmd.command        = 'MOVE'
@@ -518,6 +601,9 @@ class VisionNode(Node):
     def _on_motion_feedback(self, msg):
         """Receives MotionFeedback from embedded_interface_node."""
         self._motion_success = msg.success
+        # Cache latest joint positions for wrist-mounted camera T computation
+        if msg.joint_positions and len(msg.joint_positions) >= 6:
+            self._last_joint_positions = list(msg.joint_positions[:6])
         self._motion_event.set()
 
     # -------------------------------------------------------------------------

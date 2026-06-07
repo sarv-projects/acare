@@ -37,8 +37,8 @@ class LocaliseTest(Node):
 
         # Load YOLO
         try:
-            from acare_vision.yolo_infer import YOLOv11ONNX
-            self._model = YOLOv11ONNX(MODEL_PATH, conf_thresh=0.60)
+            from acare_vision.yolo_infer import YOLO26ONNX
+            self._model = YOLO26ONNX(MODEL_PATH, conf_thresh=0.60)
             print(f'YOLO loaded. Classes: {self._model.class_names}')
         except Exception as e:
             print(f'YOLO load failed: {e}')

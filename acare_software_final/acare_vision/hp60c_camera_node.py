@@ -15,6 +15,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
+from acare_bringup.qos_profiles import TOPIC_SENSOR
 import numpy as np
 import threading
 import time
@@ -50,11 +51,11 @@ class HP60CCameraNode(Node):
         self._lock = threading.Lock()
         self._frame_count = 0
 
-        self.create_subscription(Image, self.RGB_TOPIC,   self._on_rgb,   10)
-        self.create_subscription(Image, self.DEPTH_TOPIC, self._on_depth, 10)
-        self.create_subscription(CameraInfo, self.RGB_INFO_TOPIC, self._on_rgb_info, 10)
-        self.create_subscription(CameraInfo, self.DEPTH_INFO_TOPIC, self._on_depth_info, 10)
-        self.create_subscription(PointCloud2, self.POINTS_TOPIC, self._on_points, 10)
+        self.create_subscription(Image, self.RGB_TOPIC,   self._on_rgb,   TOPIC_SENSOR)
+        self.create_subscription(Image, self.DEPTH_TOPIC, self._on_depth, TOPIC_SENSOR)
+        self.create_subscription(CameraInfo, self.RGB_INFO_TOPIC, self._on_rgb_info, TOPIC_SENSOR)
+        self.create_subscription(CameraInfo, self.DEPTH_INFO_TOPIC, self._on_depth_info, TOPIC_SENSOR)
+        self.create_subscription(PointCloud2, self.POINTS_TOPIC, self._on_points, TOPIC_SENSOR)
         self.create_timer(5.0, self._health_tick)
 
         self.get_logger().info('HP60C camera node started — waiting for ascamera topics...')

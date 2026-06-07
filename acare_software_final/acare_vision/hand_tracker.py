@@ -49,12 +49,15 @@ class HandTracker:
     and publishes results to the hand_pub publisher provided at init.
     """
 
-    def __init__(self, localiser, camera, hand_pub, logger=None):
+    def __init__(self, localiser, camera, hand_pub, logger=None,
+                 arm_link_lengths=None):
         """
-        localiser — Localiser instance for pixel → robot frame conversion
-        camera    — HP60CCameraNode instance with capture() method
-        hand_pub  — ROS2 publisher for HandStatus messages
-        logger    — ROS2 node logger (optional, for debug output)
+        localiser        — Localiser instance for pixel → robot frame conversion
+        camera           — HP60CCameraNode instance with capture() method
+        hand_pub         — ROS2 publisher for HandStatus messages
+        logger           — ROS2 node logger (optional, for debug output)
+        arm_link_lengths — dict {base_height, upper_arm, forearm} for FK.
+                           Needed for wrist-mounted camera T computation.
         """
         self.localiser = localiser
         self.camera    = camera
@@ -62,6 +65,12 @@ class HandTracker:
         self.logger    = logger
         self.running   = False
         self._thread   = None
+        self._arm_link_lengths = arm_link_lengths or {'base_height': 0.352, 'upper_arm': 0.400, 'forearm': 0.400}
+        # Joint angles of the arm during HANDOVER (presentation pose).
+        # Set via set_viewpoint_joints() before start() so that
+        # pixel_to_robot() can use a wrist-mounted camera T override.
+        self._current_joints = None
+        self._T_override     = None
 
         if MEDIAPIPE_AVAILABLE:
             self._hands = mp.solutions.hands.Hands(
@@ -74,6 +83,17 @@ class HandTracker:
             self._hands = None
             if logger:
                 logger.warn('MediaPipe not available — hand tracking disabled')
+
+    def set_viewpoint_joints(self, joint_angles: list[float]):
+        """
+        Called before start() with the arm's current joint angles so that
+        pixel_to_robot() can compute a correct wrist-mounted camera transform.
+        """
+        self._current_joints = [float(a) for a in joint_angles]
+        if hasattr(self.localiser, 'compute_T_for_viewpoint'):
+            self._T_override = self.localiser.compute_T_for_viewpoint(
+                self._current_joints, self._arm_link_lengths,
+            )
 
     def start(self):
         """Start the hand tracking background thread."""
@@ -97,7 +117,8 @@ class HandTracker:
                 time.sleep(0.05)
                 continue
             msg = self._process(rgb, depth)
-            self.hand_pub.publish(msg)
+            if self.hand_pub is not None:
+                self.hand_pub.publish(msg)
             time.sleep(0.05)   # ~20 Hz
 
     def _process(self, rgb_frame: np.ndarray, depth_frame: np.ndarray):
@@ -118,6 +139,7 @@ class HandTracker:
         msg.hand_detected = False
         msg.is_open       = False
         msg.palm_up       = False
+        msg.hand_approaching = False
         msg.confidence    = 0.0
         msg.x = msg.y = msg.z = 0.0
 
@@ -176,8 +198,13 @@ class HandTracker:
         # Use a small 10x10 bbox around palm centre for depth lookup
         bbox = (px - 5, py - 5, px + 5, py + 5)
         if depth_frame is not None:
-            pos = self.localiser.pixel_to_robot(bbox, depth_frame)
+            pos = self.localiser.pixel_to_robot(bbox, depth_frame,
+                                                T_override=self._T_override)
             if pos:
                 msg.x, msg.y, msg.z = pos
+
+        # --- hand_approaching: hand is open and within reach (e.g., z < 0.6m in front) ---
+        # Note: palm_up is now advisory for this camera geometry. X is forward depth in robot frame.
+        msg.hand_approaching = bool(msg.hand_detected and msg.is_open and 0.0 < msg.x < 0.6)
 
         return msg

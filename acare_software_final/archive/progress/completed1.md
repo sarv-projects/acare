@@ -58,7 +58,7 @@ ROS_DISTRO = jazzy
 │   ├── acare_logging/       <- SQLite audit trail — BUILT
 │   ├── acare_admin/         <- Admin CLI — BUILT
 │   ├── acare_auth/          <- Biometric auth (Shreevanth) — BUILT
-│   ├── acare_dialogue/      <- LangGraph dialogue (Shreevanth) — BUILT
+│   ├── acare_dialogue/      <- Custom State/Slots dialogue (Shreevanth) — BUILT
 │   ├── acare_embedded_interface/ <- C++ UART bridge (empty) — BUILT
 │   ├── acare_bringup/       <- Config + launch + supervisor — BUILT
 │   └── ascamera/            <- YDLIDAR HP60C SDK ROS2 node — BUILT
@@ -81,7 +81,7 @@ All 12 packages build successfully.
 
 ```bash
 pip install --break-system-packages \
-  speechbrain deepgram-sdk groq langgraph pyttsx3 mediapipe onnxruntime
+  speechbrain deepgram-sdk groq pyttsx3 mediapipe onnxruntime
 
 sudo apt install -y python3-colcon-common-extensions python3-pip \
   python3-opencv unzip ros-jazzy-pcl-conversions ros-jazzy-pcl-ros \
@@ -338,7 +338,7 @@ sudo apt install -y python3-colcon-common-extensions python3-pip \
   python3-opencv unzip ros-jazzy-pcl-conversions ros-jazzy-pcl-ros
 
 pip install --break-system-packages \
-  speechbrain deepgram-sdk groq langgraph pyttsx3 mediapipe onnxruntime
+  speechbrain deepgram-sdk groq pyttsx3 mediapipe onnxruntime
 ```
 
 ### Step 7 — Transfer and restore backup from laptop

@@ -1,448 +1,240 @@
 # acare_planner/agentic_planner.py
-# Spec Reference: Section XII (Task Planner Pipeline — Agentic Decision Layer)
-#
-# Agentic decision layer using NVIDIA NIM (primary) with Groq fallback.
-# Proposes adaptive search strategies and recovery actions.
-# ALL proposals are validated by SafetyKernel before execution.
-#
-# Primary: nvidia/llama-3.3-nemotron-super-49b-v1 via NIM (40 RPM free)
-#   - Strong reasoning, tool-calling fine-tuned, 128K context
-#   - OpenAI-compatible endpoint at integrate.api.nvidia.com
-#
-# Fallback: llama-3.3-70b-versatile via Groq (30 RPM free, 300+ tok/s)
-#   - Used when NIM is unavailable or rate-limited
-#
-# Deterministic fallbacks exist for EVERY decision.
-# LLM failure NEVER stops the robot — fallback activates immediately.
-#
-# Rate limit awareness:
-#   NIM: 40 RPM (no daily cap documented)
-#   Groq 70B: 30 RPM, 14,400 RPD
-#   At ~3-5 calls/task → well within both budgets.
-
-from __future__ import annotations
-
 import json
 import os
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
-MAX_RETRIES = 3
+from .state_snapshot import TaskSnapshot
+from .agent_schema import validate_agentic_decision, ToolCallSchema
 
-# ---------------------------------------------------------------------------
-# Decision JSON schema — strict mode (spec Section XII)
-# ---------------------------------------------------------------------------
-DECISION_SCHEMA = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "planner_decision",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "decision_type": {
-                    "type": "string",
-                    "enum": [
-                        "SEARCH_STRATEGY", "VISION_RECOVERY", "GRASP_RECOVERY",
-                        "IK_RECOVERY", "HANDOVER_RECOVERY", "ABORT"
-                    ]
-                },
-                "reasoning": {"type": "string"},
-                "action": {
-                    "type": "string",
-                    "enum": [
-                        "RETRY_UNIFORM_SEARCH", "ASK_USER_CONFIRM_LOCATION",
-                        "ABORT_TOOL_NOT_FOUND", "RETRY_GRASP_REPOSITION",
-                        "RETRY_GRASP_FORCE_INCREASE", "ABORT_GRASP_FAILED",
-                        "RETRY_IK_ALTERNATE_ORIENTATION", "RETRY_IK_NEXT_CANDIDATE",
-                        "ABORT_IK_FAILED", "HANDOVER_Z_UP", "HANDOVER_Z_DOWN",
-                        "HANDOVER_VOICE_HAND_ONLY", "SEARCH_PRIORITY_ZONES"
-                    ]
-                },
-                "tts_message": {"type": "string"},
-                "params": {
-                    "type": "object",
-                    "properties": {
-                        "force_delta_n":         {"type": "number"},
-                        "z_offset_m":            {"type": "number"},
-                        "rotation_deg":          {"type": "number"},
-                        "priority_zones":        {"type": "array", "items": {"type": "string"}},
-                        "reset_probability_map": {"type": "boolean"}
-                    },
-                    "required": ["force_delta_n", "z_offset_m", "rotation_deg",
-                                 "priority_zones", "reset_probability_map"],
-                    "additionalProperties": False
-                }
-            },
-            "required": ["decision_type", "reasoning", "action", "tts_message", "params"],
-            "additionalProperties": False
-        }
-    }
+PLANNER_SYSTEM_PROMPT = """You are the task executor for ACARE, a surgical instrument fetch robot.
+You receive a state snapshot and return exactly ONE tool call as JSON.
+HARD RULES:
+* Return ONLY a JSON object. No markdown. No explanation outside JSON.
+* Call exactly one tool per turn. Never plan ahead.
+* Never repeat an action that appears in tried_and_failed.
+* Never fabricate tools or parameters not in available_tools.
+* If budget.calls_remaining <= 2 and task is not near completion, call abort_task.
+* Speech must be brief (<20 words), clinical, professional. No medical advice.
+* NEVER move the arm to a position not listed in available arm positions.
+* Follow the recovery ladders EXACTLY. Do not improvise or skip rungs.
+TASK SEQUENCE:
+1. vision_scan -> find the tool
+2. arm_move(PREGRASP) -> above tool
+3. arm_move(GRASP_POINT) -> descend to tool
+4. gripper_close(NORMAL) -> grasp
+5. arm_move(FACE_HEIGHT) -> face user
+6. detect_face -> verify identity
+7. arm_move(PRESENTATION) -> present tool
+8. speak -> instruct user
+9. detect_hand -> user reaches
+10. ask_user(expect=CONFIRM) -> voice confirm
+11. gripper_open -> release
+12. complete_task
+RECOVERY LADDERS — follow in strict order, never skip rungs:
+VISION FAILURE (vision_scan returns NOT_FOUND):
+  Rung 1: If user_prior.preferred_zone exists and not yet tried -> vision_scan({'zone': preferred_zone})
+  Rung 2: vision_scan({'zone': 'AUTO'}) — queries Bayesian probability map
+  Rung 3: If AUTO fails -> ask_user("I cannot find the [tool]. Is it on the tray?")
+  Rung 4: If user responds with location -> vision_scan({'zone': that_zone})
+  Rung 5: If user says no or timeout -> abort_task("Unable to locate [tool]")
+GRASP FAILURE (gripper_close returns SLIP_DETECTED):
+  Rung 1: gripper_close(FIRM) — same position, more force
+  Rung 2: arm_approach(SIDE_LEFT) then arm_move(PREGRASP) then arm_move(GRASP_POINT) then gripper_close(FIRM) — different angle
+  Rung 3: If detection_candidates exist in snapshot -> arm_move to next candidate, repeat grasp
+  Rung 4: abort_task("Unable to grasp [tool]")
+ARM UNREACHABLE (arm_move returns UNREACHABLE):
+  Rung 1: arm_approach(SIDE_LEFT) then retry arm_move
+  Rung 2: arm_approach(SIDE_RIGHT) then retry arm_move
+  Rung 3: If detection_candidates exist -> arm_move to next candidate
+  Rung 4: abort_task("[tool] is out of reach")
+FACE DETECTION FAILURE (detect_face returns NO_FACE or WRONG_FACE):
+  Rung 1: speak("Please look at the camera") then detect_face
+  Rung 2: speak("Please face the camera directly") then detect_face
+  Rung 3: Skip face. Proceed to arm_move(PRESENTATION). Face is advisory.
+HAND DETECTION FAILURE (detect_hand returns NO_HAND):
+  Rung 1: speak("Please reach for the tool") then detect_hand
+  Rung 2: speak("Hold your hand near the gripper") then detect_hand
+  Rung 3: abort_task("Handover failed - no hand detected")
+VOICE CONFIRM FAILURE (ask_user returns TIMEOUT):
+  Rung 1: speak("Say take to receive") then ask_user(expect=CONFIRM)
+  Rung 2: abort_task("No voice confirmation received")
+ESTOP (any tool returns ESTOP):
+  -> abort_task("ESTOP") immediately. No recovery. No retry.
+RESPONSE FORMAT:
+{
+  "thought": "brief reason, max 1 sentence",
+  "tool": "tool_name",
+  "params": {"param1": "value1"},
+  "speak": "optional tts message or null"
 }
-
-PLANNER_SYSTEM_PROMPT = """You are the agentic decision layer of ACARE — an Autonomous Clinical Assistance Robot
-operating in a surgical environment. You orchestrate task recovery and search strategy for a
-6-DOF robotic arm that fetches sterile instruments for authenticated surgical staff.
-
-HARD RULES you must never violate:
-- Never suggest bypassing authentication or safety checks
-- Never suggest moving outside workspace bounds
-- Never suggest gripper force above 10N
-- Only suggest actions from the allowed action enum
-- If uncertain, choose ABORT over unsafe continuation
-- Keep tts_message brief (1-2 sentences), professional, clinical tone
-
-For the final attempt (attempt == max_retries): tts_message MUST warn staff this is the last try.
-After all retries exhausted: tts_message must clearly state inability and suggest manual procedure."""
-
-
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
-@dataclass
-class UserProfile:
-    user_id: str = ""
-    name: str = ""
-    handover_z_offset: float = 0.0
-    preferred_zones: Dict[str, str] = field(default_factory=dict)
-    last_login: str = ""
-
-
-@dataclass
-class TaskContext:
-    tool_requested: str = ""
-    tool_canonical: str = ""
-    zone_found: str = ""
-    grasp_point: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-    alternate_orientation_tried: bool = False
-    detection_candidates: List[Dict] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Agentic Planner
-# ---------------------------------------------------------------------------
+EXAMPLES:
+State: task_phase=SEARCHING, zones_searched=[], user_prior.preferred_zone=C
+Response: {"thought":"User prefers zone C, start there","tool":"vision_scan","params":{"zone":"C"},"speak":null}
+State: task_phase=SEARCHING, last_action=vision_scan(A) NOT_FOUND, zones_searched=[A,B]
+Response: {"thought":"A and B failed, try C","tool":"vision_scan","params":{"zone":"C"},"speak":null}
+State: task_phase=GRASPING, last_action=gripper_close(NORMAL) SLIP_DETECTED
+Response: {"thought":"Normal grip slipped, increase firmness","tool":"gripper_close","params":{"firmness":"FIRM"},"speak":"Adjusting grip. One moment."}
+State: task_phase=HANDOVER, last_action=detect_face() NO_FACE, action_history has 2 face failures
+Response: {"thought":"Face failed twice, skip and proceed to present","tool":"arm_move","params":{"position":"PRESENTATION"},"speak":"Proceeding with voice and hand verification."}
+"""
 
 class AgenticPlanner:
-    """
-    Proposes adaptive strategies via NVIDIA NIM (primary) or Groq (fallback).
-    All proposals validated by SafetyKernel before execution.
-    Falls back to deterministic decisions on any LLM failure.
-    """
-
-    # Primary: NVIDIA NIM — strong reasoning, tool-calling fine-tuned
-    NIM_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1"
-    NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-
-    # Fallback: Groq — fast, reliable
-    GROQ_MODEL = "llama-3.3-70b-versatile"
-
     def __init__(self, logger=None):
         self.logger = logger
         self._nim_client = None
         self._groq_client = None
         self._init_clients()
-        self.user_profiles: Dict[str, UserProfile] = {}
-        self.time_patterns: Dict[int, Dict[str, str]] = {}  # hour → {tool: zone}
 
     def _init_clients(self):
-        """Initialize NIM (primary) and Groq (fallback) clients."""
-        # NIM client — uses OpenAI SDK with custom base_url
         try:
             from openai import OpenAI
-            nim_key = os.environ.get("NVIDIA_NIM_API_KEY", "")
+            nim_key = os.environ.get("NVIDIA_NIM_API_KEY") or os.environ.get("NVIDIA_API_KEY", "")
             if nim_key:
                 self._nim_client = OpenAI(
-                    base_url=self.NIM_BASE_URL,
+                    base_url="https://integrate.api.nvidia.com/v1",
                     api_key=nim_key,
+                    timeout=4.0
                 )
         except Exception as e:
-            if self.logger:
-                self.logger.info(f"AgenticPlanner: NIM client init skipped: {e}")
+            if self.logger: self.logger.info(f"NIM client init skipped: {e}")
 
-        # Groq fallback client
         try:
-            from groq import Groq
+            from openai import OpenAI
             groq_key = os.environ.get("GROQ_API_KEY", "")
             if groq_key:
-                self._groq_client = Groq(api_key=groq_key)
+                self._groq_client = OpenAI(
+                    base_url="https://api.groq.com/openai/v1",
+                    api_key=groq_key,
+                    timeout=4.0
+                )
         except Exception as e:
-            if self.logger:
-                self.logger.info(f"AgenticPlanner: Groq client init skipped: {e}")
+            if self.logger: self.logger.info(f"Groq client init skipped: {e}")
 
-        if self._nim_client is None and self._groq_client is None:
-            if self.logger:
-                self.logger.warn("AgenticPlanner: No LLM client available — using deterministic fallbacks only")
+    def _call_llm(self, snapshot: TaskSnapshot) -> Optional[ToolCallSchema]:
+        messages = [
+            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+            snapshot.to_message()
+        ]
 
-    def _call_llm(self, messages: List[Dict], reasoning_level: str = "low") -> Optional[Dict]:
-        """
-        Calls NIM (primary) or Groq (fallback) with JSON schema output.
-        Returns parsed dict or None on any failure.
-        Never raises — robot must not crash on LLM failure.
-        """
-        system = PLANNER_SYSTEM_PROMPT + f"\n\nReasoning: {reasoning_level}"
-        full_messages = [{"role": "system", "content": system}] + messages
-
-        # Try NIM first (stronger reasoning)
-        if self._nim_client is not None:
+        if self._nim_client:
             try:
                 response = self._nim_client.chat.completions.create(
-                    model=self.NIM_MODEL,
-                    messages=full_messages,
+                    model="nvidia/llama-3.3-nemotron-super-49b-v1",
+                    messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0.1,
-                    max_tokens=512,
+                    max_tokens=256
                 )
-                return json.loads(response.choices[0].message.content)
+                return validate_agentic_decision(json.loads(response.choices[0].message.content))
             except Exception as e:
-                if self.logger:
-                    self.logger.info(f"AgenticPlanner NIM call failed: {e} — trying Groq fallback")
+                if self.logger: self.logger.info(f"NIM call failed: {e}")
 
-        # Groq fallback (fast, reliable)
-        if self._groq_client is not None:
+        if self._groq_client:
             try:
                 response = self._groq_client.chat.completions.create(
-                    model=self.GROQ_MODEL,
-                    messages=full_messages,
+                    model="llama-3.3-70b-versatile",
+                    messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0.1,
-                    max_tokens=512,
+                    max_tokens=256
                 )
-                return json.loads(response.choices[0].message.content)
+                return validate_agentic_decision(json.loads(response.choices[0].message.content))
             except Exception as e:
-                if self.logger:
-                    self.logger.warn(f"AgenticPlanner Groq fallback also failed: {e} — using deterministic")
+                if self.logger: self.logger.warning(f"Groq call failed: {e}")
 
-        return None
+        return self._deterministic_next_step(snapshot)
 
-    # -----------------------------------------------------------------------
-    # Search strategy (reasoning: low)
-    # -----------------------------------------------------------------------
+    def _deterministic_next_step(self, snapshot: TaskSnapshot) -> ToolCallSchema:
+        """Zero-LLM fallback logic based on the happy-path / recovery ladders."""
+        phase = snapshot.objective.task_phase
+        last_action = snapshot.last_action.tool_call
+        last_result = snapshot.last_action.result
+        
+        # Simplified deterministic ladder
+        if phase == "SEARCHING":
+            if last_result == "SUCCESS":
+                return validate_agentic_decision({"thought": "Found", "tool": "arm_move", "params": {"position": "PREGRASP"}, "speak": ""})
+            zones = ['A', 'B', 'C']
+            for z in zones:
+                if f"vision_scan({{'zone': '{z}'}})" not in snapshot.tried_and_failed:
+                    return validate_agentic_decision({"thought": f"Scan {z}", "tool": "vision_scan", "params": {"zone": z}, "speak": ""})
+            return validate_agentic_decision({"thought": "All zones failed", "tool": "abort_task", "params": {"reason": "Could not find tool"}, "speak": ""})
+            
+        if phase == "GRASPING":
+            if "arm_move" in last_action and last_result == "SUCCESS":
+                if "PREGRASP" in last_action:
+                    return validate_agentic_decision({"thought": "Move to grasp", "tool": "arm_move", "params": {"position": "GRASP_POINT"}, "speak": ""})
+                if "GRASP_POINT" in last_action:
+                    return validate_agentic_decision({"thought": "Close gripper", "tool": "gripper_close", "params": {"firmness": "NORMAL"}, "speak": ""})
+            if "gripper_close" in last_action:
+                if last_result == "SUCCESS":
+                    return validate_agentic_decision({"thought": "Grasp success, to face", "tool": "arm_move", "params": {"position": "FACE_HEIGHT"}, "speak": ""})
+                if last_result == "SLIP_DETECTED":
+                    return validate_agentic_decision({"thought": "Retry firm", "tool": "gripper_close", "params": {"firmness": "FIRM"}, "speak": ""})
+            return validate_agentic_decision({"thought": "Grasp failed", "tool": "abort_task", "params": {"reason": "Grasp failed"}, "speak": ""})
+            
+        if phase == "HANDOVER":
+            if "arm_move" in last_action and "FACE_HEIGHT" in last_action and last_result == "SUCCESS":
+                return validate_agentic_decision({"thought": "Verify face", "tool": "detect_face", "params": {}, "speak": ""})
+            if "detect_face" in last_action:
+                return validate_agentic_decision({"thought": "Present", "tool": "arm_move", "params": {"position": "PRESENTATION"}, "speak": ""})
+            if "arm_move" in last_action and "PRESENTATION" in last_action and last_result == "SUCCESS":
+                return validate_agentic_decision({"thought": "Wait hand", "tool": "detect_hand", "params": {}, "speak": ""})
+            if "detect_hand" in last_action:
+                if last_result == "SUCCESS":
+                    return validate_agentic_decision({"thought": "Ask voice", "tool": "ask_user", "params": {"question": "Take it", "expect": "CONFIRM"}, "speak": ""})
+                else:
+                    return validate_agentic_decision({"thought": "Hand fail", "tool": "abort_task", "params": {"reason": "No hand"}, "speak": ""})
+            if "ask_user" in last_action:
+                if last_result == "SUCCESS":
+                    return validate_agentic_decision({"thought": "Release", "tool": "gripper_open", "params": {}, "speak": ""})
+                else:
+                    return validate_agentic_decision({"thought": "Voice fail", "tool": "abort_task", "params": {"reason": "No confirm"}, "speak": ""})
+            if "gripper_open" in last_action and last_result == "SUCCESS":
+                return validate_agentic_decision({"thought": "Done", "tool": "complete_task", "params": {}, "speak": ""})
+                
+        return validate_agentic_decision({"thought": "Fallback abort", "tool": "abort_task", "params": {"reason": "Deterministic fallback failed"}, "speak": ""})
 
-    def propose_search_strategy(self, tool: str, user_id: str,
-                                 current_hour: int, attempt_number: int) -> Dict:
-        profile = self.user_profiles.get(user_id)
-        hour_pref = self.time_patterns.get(current_hour, {}).get(tool)
-        user_pref = profile.preferred_zones.get(tool) if profile else None
+    def run_task(self, node, tool_kernel, snapshot: TaskSnapshot):
+        """The main agentic loop. Replaces the old phase methods."""
+        while snapshot.budget.calls_remaining > 0:
+            if node._estop_active.is_set():
+                break
 
-        context = json.dumps({
-            "tool": tool, "attempt_number": attempt_number,
-            "current_hour": current_hour,
-            "time_based_zone_hint": hour_pref,
-            "user_preferred_zone": user_pref,
-            "failure_type": "SEARCH_STRATEGY",
-        })
-        decision = self._call_llm([{"role": "user", "content": context}], "low")
-        if decision is None:
-            priority_zones = [z for z in [user_pref, hour_pref] if z]
-            return {
-                "decision_type": "SEARCH_STRATEGY",
-                "action": "SEARCH_PRIORITY_ZONES",
-                "reasoning": "LLM unavailable — using probability map default",
-                "tts_message": f"Searching for {tool}.",
-                "params": {
-                    "priority_zones": priority_zones,
-                    "reset_probability_map": False,
-                    "force_delta_n": 0.0, "z_offset_m": 0.0, "rotation_deg": 0.0,
-                }
-            }
-        return decision
+            decision = self._call_llm(snapshot)
+            if node._estop_active.is_set():
+                break
+                
+            if not decision:
+                break
 
-    # -----------------------------------------------------------------------
-    # Vision recovery (reasoning: high)
-    # -----------------------------------------------------------------------
+            if decision.speak:
+                node._speak(decision.speak)
 
-    def propose_vision_recovery(self, tool: str, attempt: int,
-                                 safety_severity: str, network_ok: bool) -> Optional[Dict]:
-        if attempt > MAX_RETRIES:
-            return None
-        is_last = (attempt == MAX_RETRIES)
-        context = json.dumps({
-            "tool": tool, "failure_type": "TOOL_NOT_FOUND",
-            "attempt_number": attempt, "max_retries": MAX_RETRIES,
-            "is_final_attempt": is_last,
-            "safety_severity": safety_severity, "network_ok": network_ok,
-            "instruction": (
-                "FINAL attempt. tts_message must warn staff."
-                if is_last else "Propose next recovery step."
-            )
-        })
-        decision = self._call_llm([{"role": "user", "content": context}], "high")
-        if decision is None:
-            fallbacks = {
-                1: {"decision_type": "VISION_RECOVERY", "action": "RETRY_UNIFORM_SEARCH",
-                    "reasoning": "First retry: search all zones uniformly",
-                    "tts_message": f"Searching again for {tool}.",
-                    "params": {"reset_probability_map": True, "priority_zones": [],
-                               "force_delta_n": 0.0, "z_offset_m": 0.0, "rotation_deg": 0.0}},
-                2: {"decision_type": "VISION_RECOVERY", "action": "ASK_USER_CONFIRM_LOCATION",
-                    "reasoning": "Second retry: ask user",
-                    "tts_message": f"I still cannot find the {tool}. Can you confirm it is on the tray?",
-                    "params": {"reset_probability_map": False, "priority_zones": [],
-                               "force_delta_n": 0.0, "z_offset_m": 0.0, "rotation_deg": 0.0}},
-                3: {"decision_type": "VISION_RECOVERY", "action": "ABORT_TOOL_NOT_FOUND",
-                    "reasoning": "Max retries reached",
-                    "tts_message": f"Last attempt — searching one final time for the {tool}.",
-                    "params": {"reset_probability_map": True, "priority_zones": [],
-                               "force_delta_n": 0.0, "z_offset_m": 0.0, "rotation_deg": 0.0}},
-            }
-            return fallbacks.get(attempt)
-        return decision
+            snapshot.budget.calls_remaining -= 1
+            snapshot.budget.calls_used += 1
 
-    # -----------------------------------------------------------------------
-    # Grasp recovery (reasoning: high)
-    # -----------------------------------------------------------------------
+            try:
+                success, reason, obs = tool_kernel.execute_tool(decision.tool, decision.params)
+            except Exception as e:
+                success, reason, obs = False, "EXECUTION_ERROR", str(e)
+                if self.logger: self.logger.error(f"Tool {decision.tool} crashed: {e}")
+            
+            action_sig = f"{decision.tool}({decision.params})"
+            snapshot.last_action.tool_call = action_sig
+            snapshot.last_action.result = reason
+            snapshot.last_action.reason = obs
+            
+            snapshot.action_history.append({"call": action_sig, "result": reason, "n": snapshot.budget.calls_used})
+            
+            if not success and reason != "ESTOP":
+                snapshot.tried_and_failed.append(action_sig)
 
-    def propose_grasp_recovery(self, tool: str, attempt: int,
-                                gripper_force: float, safety_severity: str) -> Optional[Dict]:
-        if attempt > MAX_RETRIES:
-            return None
-        is_last = (attempt == MAX_RETRIES)
-        context = json.dumps({
-            "tool": tool, "failure_type": "GRASP_FAILED",
-            "attempt_number": attempt, "max_retries": MAX_RETRIES,
-            "is_final_attempt": is_last,
-            "current_gripper_force": gripper_force,
-            "safety_severity": safety_severity,
-            "instruction": "FINAL attempt. Force must stay below 10N." if is_last else "Force must stay below 10N."
-        })
-        decision = self._call_llm([{"role": "user", "content": context}], "high")
-        if decision is None:
-            fallbacks = {
-                1: {"decision_type": "GRASP_RECOVERY", "action": "RETRY_GRASP_REPOSITION",
-                    "reasoning": "First retry: reposition approach",
-                    "tts_message": f"Adjusting grip on {tool}. Retrying.",
-                    "params": {"force_delta_n": 0.0, "rotation_deg": 15.0,
-                               "priority_zones": [], "z_offset_m": 0.0,
-                               "reset_probability_map": False}},
-                2: {"decision_type": "GRASP_RECOVERY", "action": "RETRY_GRASP_FORCE_INCREASE",
-                    "reasoning": "Second retry: slight force increase",
-                    "tts_message": f"Retrying grasp of {tool} with adjusted force.",
-                    "params": {"force_delta_n": 1.0, "rotation_deg": 0.0,
-                               "priority_zones": [], "z_offset_m": 0.0,
-                               "reset_probability_map": False}},
-                3: {"decision_type": "GRASP_RECOVERY", "action": "RETRY_GRASP_FORCE_INCREASE",
-                    "reasoning": "Final retry: max safe force",
-                    "tts_message": f"Last attempt to grasp the {tool}. Please ensure it is correctly positioned.",
-                    "params": {"force_delta_n": 2.0, "rotation_deg": 0.0,
-                               "priority_zones": [], "z_offset_m": 0.0,
-                               "reset_probability_map": False}},
-            }
-            return fallbacks.get(attempt)
-        return decision
+            if decision.tool == "gripper_close" and success:
+                snapshot.objective.task_phase = "HANDOVER"
+            elif decision.tool == "vision_scan" and success:
+                snapshot.objective.task_phase = "GRASPING"
 
-    # -----------------------------------------------------------------------
-    # IK recovery (reasoning: high)
-    # -----------------------------------------------------------------------
-
-    def propose_ik_recovery(self, tool: str, attempt: int,
-                             alternate_tried: bool,
-                             candidate_count: int,
-                             safety_severity: str) -> Optional[Dict]:
-        if attempt > MAX_RETRIES:
-            return None
-        is_last = (attempt == MAX_RETRIES)
-        context = json.dumps({
-            "tool": tool, "failure_type": "IK_FAILED",
-            "attempt_number": attempt, "max_retries": MAX_RETRIES,
-            "is_final_attempt": is_last,
-            "alternate_orientation_tried": alternate_tried,
-            "remaining_candidates": candidate_count,
-            "safety_severity": safety_severity,
-            "instruction": "FINAL attempt. If no candidates remain, action must be ABORT_IK_FAILED." if is_last else ""
-        })
-        decision = self._call_llm([{"role": "user", "content": context}], "high")
-        if decision is None:
-            if attempt == 1 and not alternate_tried:
-                return {"decision_type": "IK_RECOVERY",
-                        "action": "RETRY_IK_ALTERNATE_ORIENTATION",
-                        "reasoning": "Try 90° rotation",
-                        "tts_message": f"Adjusting approach angle for {tool}.",
-                        "params": {"rotation_deg": 90.0, "force_delta_n": 0.0,
-                                   "z_offset_m": 0.0, "priority_zones": [],
-                                   "reset_probability_map": False}}
-            if candidate_count > 0:
-                prefix = f"Last attempt to reach the {tool}. " if is_last else ""
-                return {"decision_type": "IK_RECOVERY",
-                        "action": "RETRY_IK_NEXT_CANDIDATE",
-                        "reasoning": "Try next candidate",
-                        "tts_message": f"{prefix}Trying alternate position for {tool}.",
-                        "params": {"rotation_deg": 0.0, "force_delta_n": 0.0,
-                                   "z_offset_m": 0.0, "priority_zones": [],
-                                   "reset_probability_map": False}}
-            return {"decision_type": "IK_RECOVERY",
-                    "action": "ABORT_IK_FAILED",
-                    "reasoning": "No candidates remain",
-                    "tts_message": f"Unable to reach the {tool}. Please reposition it and try again.",
-                    "params": {"rotation_deg": 0.0, "force_delta_n": 0.0,
-                               "z_offset_m": 0.0, "priority_zones": [],
-                               "reset_probability_map": False}}
-        return decision
-
-    # -----------------------------------------------------------------------
-    # Handover face recovery (reasoning: low)
-    # -----------------------------------------------------------------------
-
-    def propose_handover_face_recovery(self, user_name: str, tool: str,
-                                        attempt: int, current_z: float) -> Dict:
-        """Always returns a dict — handover never aborts on face failure alone."""
-        context = json.dumps({
-            "user_name": user_name, "tool": tool,
-            "failure_type": "FACE_VERIFY_FAILED",
-            "attempt_number": attempt, "max_retries": MAX_RETRIES,
-            "current_z_m": current_z,
-            "instruction": "Attempt 3: must use HANDOVER_VOICE_HAND_ONLY." if attempt >= MAX_RETRIES else ""
-        })
-        decision = self._call_llm([{"role": "user", "content": context}], "low")
-        if decision is None or attempt >= MAX_RETRIES:
-            if attempt >= MAX_RETRIES:
-                return {"decision_type": "HANDOVER_RECOVERY",
-                        "action": "HANDOVER_VOICE_HAND_ONLY",
-                        "reasoning": "3 face attempts failed — voice+hand fallback",
-                        "tts_message": "Face verification unavailable. Proceeding with voice and hand confirmation only.",
-                        "params": {"z_offset_m": 0.0, "force_delta_n": 0.0,
-                                   "rotation_deg": 0.0, "priority_zones": [],
-                                   "reset_probability_map": False}}
-            fallbacks = {
-                1: {"decision_type": "HANDOVER_RECOVERY", "action": "HANDOVER_Z_UP",
-                    "reasoning": "Move arm up to find face",
-                    "tts_message": "Please look at the camera.",
-                    "params": {"z_offset_m": 0.05, "force_delta_n": 0.0,
-                               "rotation_deg": 0.0, "priority_zones": [],
-                               "reset_probability_map": False}},
-                2: {"decision_type": "HANDOVER_RECOVERY", "action": "HANDOVER_Z_DOWN",
-                    "reasoning": "Move arm down to find face",
-                    "tts_message": "Please face the camera directly.",
-                    "params": {"z_offset_m": -0.05, "force_delta_n": 0.0,
-                               "rotation_deg": 0.0, "priority_zones": [],
-                               "reset_probability_map": False}},
-            }
-            return fallbacks.get(attempt, fallbacks[1])
-        return decision
-
-    # -----------------------------------------------------------------------
-    # Learning
-    # -----------------------------------------------------------------------
-
-    def learn_from_success(self, context: TaskContext, user_id: str):
-        profile = self.user_profiles.setdefault(user_id, UserProfile(user_id=user_id))
-        if context.zone_found:
-            profile.preferred_zones[context.tool_canonical] = context.zone_found
-        hour = datetime.now().hour
-        self.time_patterns.setdefault(hour, {})[context.tool_canonical] = context.zone_found
-        if self.logger:
-            self.logger.info(
-                f"AgenticPlanner learned: {context.tool_canonical} → "
-                f"{context.zone_found} for user {user_id} at hour {hour}"
-            )
-
-    def learn_height_adjustment(self, user_id: str, command: str):
-        profile = self.user_profiles.setdefault(user_id, UserProfile(user_id=user_id))
-        delta = 0.05 if command == "higher" else -0.05
-        profile.handover_z_offset = max(-0.15, min(0.15, profile.handover_z_offset + delta))
-
-    def get_handover_z_offset(self, user_id: str) -> float:
-        profile = self.user_profiles.get(user_id)
-        return profile.handover_z_offset if profile else 0.0
+            if decision.tool == "complete_task" or decision.tool == "abort_task":
+                break

@@ -1,3 +1,4 @@
+std_msgs/Header header
 bool hand_detected
 bool is_open
 bool palm_up

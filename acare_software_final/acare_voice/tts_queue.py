@@ -114,10 +114,14 @@ class TTSQueue:
             duration = time.time() - start_time
             self._tts_active.clear()
 
-            pygame.mixer.music.unload()
+            try:
+                if pygame.mixer.get_init():
+                    pygame.mixer.music.unload()
+            except:
+                pass
             try:
                 os.unlink(tmp_path)
-            except:
+            except OSError:
                 pass
             return True
 

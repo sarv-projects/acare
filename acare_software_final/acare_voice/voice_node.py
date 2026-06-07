@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional, Dict
 
 from .vad import VADListener
@@ -15,6 +16,7 @@ from .fast_intent import parse_fast_intent, is_simple_command
 from .dialogue_manager import DialogueManager
 from .tts_queue import TTSQueue, Priority
 from .earcons import play_turn_ready, play_listen_start, play_estop, play_barge_in
+from acare_bringup.constants import ESTOP_KEYWORDS
 
 
 class VoiceNode:
@@ -53,6 +55,7 @@ class VoiceNode:
         self._backchannel_threshold = 1.5
 
         self._vad_thread: Optional[threading.Thread] = None
+        self._return_to_listen_pool = ThreadPoolExecutor(max_workers=1)
         self._running = False
 
         self._register_state_callbacks()
@@ -92,6 +95,7 @@ class VoiceNode:
 
     def stop(self) -> None:
         self._running = False
+        self._return_to_listen_pool.shutdown(wait=False)
         if self.tts:
             self.tts.speak_urgent("Shutting down. Goodbye.")
         if self.vad:
@@ -116,7 +120,17 @@ class VoiceNode:
         self.tts.speak(f"Logged in as {name}. How can I assist?")
         print(f"[VoiceNode] Session started for {name} ({user_id})")
 
+    def _schedule_return_to_listen(self, delay: float):
+        def task():
+            time.sleep(delay)
+            self.state_mgr.transition(SystemState.LISTENING, "Return to listen")
+            play_turn_ready()
+        self._return_to_listen_pool.submit(task)
+
     def on_logged_out(self) -> None:
+        if self.state_mgr.state == SystemState.ESTOP:
+            self.tts.speak("Cannot log out during emergency stop.")
+            return
         if self.state_mgr.state in (SystemState.CONFIRMED, SystemState.PROCESSING):
             self.tts.speak("Cannot log out during active task.")
             return
@@ -220,7 +234,7 @@ class VoiceNode:
         words = [w.strip(".,!?;:'\"") for w in lowered.split()]
         if not words:
             return False
-        for kw in ("stop", "halt", "emergency", "abort", "ruko", "bas"):
+        for kw in ESTOP_KEYWORDS:
             if kw in words:
                 # Strict: the utterance must be short (<=2 words) so we don't
                 # fire on conversational uses like "stop asking me questions".
@@ -235,12 +249,7 @@ class VoiceNode:
         response = self.assistant.get_response(text)
         self.tts.speak(response)
 
-        def return_to_listen():
-            time.sleep(0.5)
-            self.state_mgr.transition(SystemState.LISTENING, "Assistant response complete")
-            play_turn_ready()
-
-        threading.Thread(target=return_to_listen, daemon=True).start()
+        self._schedule_return_to_listen(0.5)
 
     def _handle_command_mode(self, text: str) -> None:
         fast_intent = parse_fast_intent(text, self.dialogue.get_last_tool())
@@ -372,12 +381,7 @@ class VoiceNode:
         if self.on_intent_resolved_cb:
             self.on_intent_resolved_cb(intent)
 
-        def return_to_listen():
-            time.sleep(1.0)
-            self.state_mgr.transition(SystemState.LISTENING, "Execution complete")
-            play_turn_ready()
-
-        threading.Thread(target=return_to_listen, daemon=True).start()
+        self._schedule_return_to_listen(1.0)
 
     def _handle_multi_tool(self, tools: list) -> None:
         if len(tools) == 2:

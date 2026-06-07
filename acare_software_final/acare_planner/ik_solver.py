@@ -267,6 +267,11 @@ class IKSolver:
         x, y, z = (float(v) for v in xyz)
         return self.solve_with_status((x, y, z + PREGRASP_APPROACH_M), top_down=True).joint_angles
 
+    def solve_pregrasp_with_status(self, xyz: Iterable[float]) -> IKResult:
+        """Like solve_pregrasp but returns the full IKResult with reachable flag."""
+        x, y, z = (float(v) for v in xyz)
+        return self.solve_with_status((x, y, z + PREGRASP_APPROACH_M), top_down=True)
+
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------

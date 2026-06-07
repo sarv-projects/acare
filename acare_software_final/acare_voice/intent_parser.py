@@ -3,6 +3,7 @@ from groq import Groq
 import json
 import os
 from .fast_intent import parse_fast_intent, is_simple_command
+from acare_bringup.constants import VALID_TOOLS
 
 load_dotenv()
 
@@ -14,8 +15,6 @@ def _get_client() -> Groq:
         raise ValueError("GROQ_API_KEY not found in .env file")
     return Groq(api_key=api_key)
 
-
-VALID_TOOLS = ["cream", "scissors", "forceps", "thermometer", "oximeter", "plaster"]
 
 SYSTEM_PROMPT = f"""You are only a voice command parser for a surgical robot called ACARE.
 Your only job is to extract structured intent from voice commands spoken by surgeons.
@@ -70,10 +69,6 @@ def parse_intent(transcript, last_tool=None):
             return None
 
         return intent
-
-    except json.JSONDecodeError:
-        print(f"Groq returned invalid JSON: {raw}")
-        return None
 
     except Exception as e:
         print(f"Groq API error: {e}")

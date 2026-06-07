@@ -2,9 +2,9 @@
 ACARE embedded interface node — bridge between high-level planner commands
 and either:
   1. Gazebo's ros2_control controllers (sim path), or
-  2. Teensy 4.1 over UART/CAN (real-hardware path, future).
+  2. Teensy 4.1 over SPI (real-hardware path).
 
-Spec Reference: Section XV (Embedded Interface — UART / CAN bridge).
+Spec Reference: Section XV (Embedded Interface — SPI bridge).
 
 Sim path (current):
   Subscribes to /arm_command and /gripper_command from the planner.
@@ -13,11 +13,16 @@ Sim path (current):
   Mirrors gripper commands onto /gripper_controller/follow_joint_trajectory.
   Publishes MotionFeedback on /motion_feedback after each command.
 
-Real-hardware path (future): write to a serial bridge, parse CAN telemetry.
+Real-hardware path:
+  Writes joint commands to Teensy 4.1 over SPI (10 MHz, 37-byte packets).
+  Reads joint state telemetry from Teensy.
+  ESTOP is hardware-latched via SPI estop byte.
+
 The code path is selected at runtime via system.yaml (interface.mode).
 """
 from __future__ import annotations
 
+import struct
 import threading
 import time
 from typing import List
@@ -38,6 +43,7 @@ from acare_msgs.msg import (
     MotionFeedback,
     RobotState,
 )
+from acare_bringup.qos_profiles import TOPIC_STATE, TOPIC_SENSOR, TOPIC_COMMAND, TOPIC_ESTOP
 
 
 # Spec joint order — must match URDF and ros2_controllers.yaml
@@ -54,46 +60,81 @@ DEFAULT_GRIPPER_DURATION = 0.7
 GRIPPER_OPEN_POS = 0.0
 GRIPPER_CLOSE_POS = 0.04
 
+# SPI hardware constants
+SPI_BUS = 0
+SPI_DEVICE = 0
+SPI_SPEED_HZ = 10_000_000
+SPI_PACKET_BYTES = 37  # sizeof(JointState) from Teensy firmware
+
 
 class EmbeddedInterfaceNode(Node):
     def __init__(self):
         super().__init__("embedded_interface_node")
-        self.feedback_pub = self.create_publisher(MotionFeedback, "/motion_feedback", 10)
-        self.create_subscription(ArmCommand, "/arm_command", self._on_arm_command, 10)
-        self.create_subscription(GripperCommand, "/gripper_command", self._on_gripper_command, 10)
-        self.create_subscription(EmergencySignal, "/emergency_stop", self._on_estop, 10)
-        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, 10)
+        
+        # Load interface mode and joint limits from system.yaml
+        (
+            self._interface_mode,
+            self._joint_limits_min,
+            self._joint_limits_max,
+            self._kiosk_rest_pose,
+            self._kiosk_interaction_pose,
+            self._kiosk_velocity_scale,
+            self._kiosk_accel_limit,
+        ) = self._load_config()
+        
+        self.feedback_pub = self.create_publisher(MotionFeedback, "/motion_feedback", TOPIC_SENSOR)
+        self.create_subscription(ArmCommand, "/arm_command", self._on_arm_command, TOPIC_COMMAND)
+        self.create_subscription(GripperCommand, "/gripper_command", self._on_gripper_command, TOPIC_COMMAND)
+        self.create_subscription(EmergencySignal, "/emergency_stop", self._on_estop, TOPIC_ESTOP)
+        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE)
 
         self._lock = threading.Lock()
         self._estop = False
         self._robot_state = "LOGGED_OUT"
 
-        (
-            self._kiosk_rest_pose,
-            self._kiosk_interaction_pose,
-            self._kiosk_velocity_scale,
-            self._kiosk_accel_limit,
-        ) = self._load_kiosk_policy()
+        # SPI hardware path (only initialized if mode == "hardware")
+        self._spi_device = None
+        if self._interface_mode == "hardware":
+            self._init_spi_hardware()
 
-        # Action clients to Gazebo controllers. Note: these don't block the
+        # Action clients to Gazebo controllers (sim path only). Note: these don't block the
         # init flow — they wait at first send_goal_async call.
-        self._arm_client = ActionClient(self, FollowJointTrajectory, ARM_ACTION_TOPIC)
-        self._gripper_client = ActionClient(self, FollowJointTrajectory, GRIPPER_ACTION_TOPIC)
-
-        self.get_logger().info(
-            f"Embedded interface ready arm={ARM_ACTION_TOPIC} gripper={GRIPPER_ACTION_TOPIC}"
-        )
+        if self._interface_mode == "sim":
+            self._arm_client = ActionClient(self, FollowJointTrajectory, ARM_ACTION_TOPIC)
+            self._gripper_client = ActionClient(self, FollowJointTrajectory, GRIPPER_ACTION_TOPIC)
+            self.get_logger().info(
+                f"Embedded interface ready (SIM) arm={ARM_ACTION_TOPIC} gripper={GRIPPER_ACTION_TOPIC}"
+            )
+        else:
+            self.get_logger().info(
+                f"Embedded interface ready (HARDWARE) SPI bus={SPI_BUS} device={SPI_DEVICE}"
+            )
 
     # ------------------------------------------------------------------
     # Config
     # ------------------------------------------------------------------
-    def _load_kiosk_policy(self):
+    def _load_config(self):
         try:
             import yaml
 
             with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
                 cfg = yaml.safe_load(handle) or {}
+            
+            # Interface mode (sim or hardware)
+            interface_cfg = cfg.get("interface", {}) or {}
+            mode = str(interface_cfg.get("mode", "sim")).lower()
+            if mode not in ("sim", "hardware"):
+                self.get_logger().warn(f"Unknown interface mode '{mode}', falling back to 'sim'")
+                mode = "sim"
+            
+            # Joint limits from arm section
             arm = cfg.get("arm", {}) or {}
+            limits_min = [float(v) for v in arm.get("joint_limits_min", [-3.14]*6)]
+            limits_max = [float(v) for v in arm.get("joint_limits_max", [3.14]*6)]
+            if len(limits_min) != 6 or len(limits_max) != 6:
+                raise ValueError("Joint limits must contain 6 values")
+            
+            # Kiosk policy
             soft = arm.get("control_soft_limits", {}) or {}
             rest = [float(v) for v in arm.get("kiosk_rest_joint_angles", [0.0, 0.15, -0.35, 0.0, 0.10, 0.0])]
             interaction = [float(v) for v in arm.get("kiosk_interaction_joint_angles", [0.0, -0.10, -0.05, 0.0, -0.05, 0.0])]
@@ -101,25 +142,62 @@ class EmbeddedInterfaceNode(Node):
             kiosk_accel = float(soft.get("kiosk_accel_limit", 0.10))
             if len(rest) != 6 or len(interaction) != 6:
                 raise ValueError("Kiosk poses must contain 6 joints")
-            return rest, interaction, kiosk_velocity, kiosk_accel
+            
+            return (mode, limits_min, limits_max, rest, interaction, kiosk_velocity, kiosk_accel)
         except Exception as exc:
-            self.get_logger().warn(f"Falling back to default kiosk poses: {exc}")
+            self.get_logger().warn(f"Falling back to default config: {exc}")
             return (
+                "sim",
+                [-3.14159, -2.35619, -2.09440, -3.14159, -3.14159, -3.14159],
+                [3.14159, 2.35619, 2.09440, 3.14159, 3.14159, 3.14159],
                 [0.0, 0.15, -0.35, 0.0, 0.10, 0.0],
                 [0.0, -0.10, -0.05, 0.0, -0.05, 0.0],
                 0.22,
                 0.10,
             )
 
+    def _init_spi_hardware(self):
+        """Initialize SPI device for real-hardware path. Requires spidev library."""
+        try:
+            import spidev
+            self._spi_device = spidev.SpiDev()
+            self._spi_device.open(SPI_BUS, SPI_DEVICE)
+            self._spi_device.max_speed_hz = SPI_SPEED_HZ
+            self._spi_device.mode = 0b00  # SPI MODE0
+            self.get_logger().info(f"SPI hardware initialized: bus={SPI_BUS} dev={SPI_DEVICE} speed={SPI_SPEED_HZ}")
+        except ImportError:
+            self.get_logger().error("spidev library not found. Install with: pip install spidev")
+            self.get_logger().error("Falling back to sim mode")
+            self._interface_mode = "sim"
+            self._arm_client = ActionClient(self, FollowJointTrajectory, ARM_ACTION_TOPIC)
+            self._gripper_client = ActionClient(self, FollowJointTrajectory, GRIPPER_ACTION_TOPIC)
+        except Exception as exc:
+            self.get_logger().error(f"Failed to initialize SPI: {exc}")
+            self.get_logger().error("Falling back to sim mode")
+            self._interface_mode = "sim"
+            self._arm_client = ActionClient(self, FollowJointTrajectory, ARM_ACTION_TOPIC)
+            self._gripper_client = ActionClient(self, FollowJointTrajectory, GRIPPER_ACTION_TOPIC)
+
+    def _validate_joint_limits(self, joint_angles: List[float]) -> tuple[bool, str]:
+        """Validate joint angles against soft limits. Returns (valid, error_message)."""
+        if len(joint_angles) != 6:
+            return False, f"expected 6 joints, got {len(joint_angles)}"
+        
+        for i, (angle, lo, hi) in enumerate(zip(joint_angles, self._joint_limits_min, self._joint_limits_max)):
+            if angle < lo or angle > hi:
+                return False, f"joint {i} angle {angle:.3f} outside limits [{lo:.3f}, {hi:.3f}]"
+        
+        return True, ""
+
     def _on_robot_state(self, msg: RobotState):
-        prev = self._robot_state
-        self._robot_state = msg.state
-        # Clear the ESTOP latch when the system recovers to STANDBY/LOGGED_OUT.
-        # Without this, every goal stays rejected until process restart.
-        if msg.state in ("STANDBY", "LOGGED_OUT") and prev == "ESTOP":
-            with self._lock:
+        with self._lock:
+            prev = self._robot_state
+            self._robot_state = msg.state
+            # Clear the ESTOP latch when the system recovers to STANDBY/LOGGED_OUT.
+            # Without this, every goal stays rejected until process restart.
+            if msg.state in ("STANDBY", "LOGGED_OUT") and prev == "ESTOP":
                 self._estop = False
-            self.get_logger().info("Embedded interface: ESTOP latch cleared on recovery")
+                self.get_logger().info("Embedded interface: ESTOP latch cleared on recovery")
 
     # ------------------------------------------------------------------
     # Command guards
@@ -183,9 +261,10 @@ class EmbeddedInterfaceNode(Node):
     # Async send helpers
     # ------------------------------------------------------------------
     def _send_goal_async(self, client: ActionClient, goal: FollowJointTrajectory.Goal, phase: str, gripper_force: float = 0.0):
-        if self._estop:
-            self._publish_feedback(False, phase, "estop_active")
-            return
+        with self._lock:
+            if self._estop:
+                self._publish_feedback(False, phase, "estop_active")
+                return
         # NON-BLOCKING readiness check. wait_for_server(timeout=2s) would block
         # the executor and could delay the ESTOP callback — never block here.
         if not client.server_is_ready():
@@ -243,12 +322,63 @@ class EmbeddedInterfaceNode(Node):
             self._publish_feedback(False, f"arm_{cmd.lower()}", f"expected_{len(ARM_JOINT_NAMES)}_joints")
             return
 
+        # Validate joint limits before sending command
+        valid, error_msg = self._validate_joint_limits(positions)
+        if not valid:
+            self.get_logger().warn(f"Joint limit violation: {error_msg}")
+            self._publish_feedback(False, f"arm_{cmd.lower()}", f"joint_limit_violation:{error_msg}")
+            return
+
+        # Route to sim or hardware path
+        if self._interface_mode == "sim":
+            self._send_arm_command_sim(positions, msg, cmd)
+        else:
+            self._send_arm_command_hardware(positions, msg, cmd)
+
+    def _send_arm_command_sim(self, positions: List[float], msg: ArmCommand, cmd: str):
+        """Send arm command via Gazebo action client (sim path)."""
         # Velocity scale → trajectory duration. Faster scale → shorter duration.
-        vel = max(0.05, min(1.0, float(msg.velocity_scale) or 0.5))
+        try:
+            raw_vel = float(msg.velocity_scale)
+        except (ValueError, TypeError):
+            raw_vel = 0.5
+        vel = max(0.05, min(1.0, raw_vel if raw_vel > 0 else 0.5))
         duration = DEFAULT_ARM_DURATION / vel
         goal = self._build_trajectory(ARM_JOINT_NAMES, positions, duration)
         phase = f"arm_{cmd.lower()}"
         self._send_goal_async(self._arm_client, goal, phase)
+
+    def _send_arm_command_hardware(self, positions: List[float], msg: ArmCommand, cmd: str):
+        """Send arm command via SPI to Teensy (hardware path)."""
+        if self._spi_device is None:
+            self._publish_feedback(False, f"arm_{cmd.lower()}", "spi_device_not_initialized")
+            return
+
+        try:
+            # Pack JointCmd struct: 6 floats (target_pos) + 1 byte (estop=0)
+            # Matches Teensy firmware: struct JointCmd { float target_pos[6]; uint8_t estop; }
+            cmd_bytes = struct.pack('<6f B', *positions, 0)
+            
+            # SPI transfer: send command, receive state
+            response = self._spi_device.xfer2(list(cmd_bytes) + [0] * (SPI_PACKET_BYTES - len(cmd_bytes)))
+            
+            # Parse JointState response: 6 floats + 6 uint16 + 1 byte
+            state = struct.unpack('<6f 6H B', bytes(response[:SPI_PACKET_BYTES]))
+            current_pos = state[0:6]
+            freq_cmd = state[6:12]
+            fault_flags = state[12]
+            
+            if fault_flags:
+                fault_joints = [i for i in range(6) if fault_flags & (1 << i)]
+                self.get_logger().warn(f"Teensy reports joint faults: {fault_joints}")
+                self._publish_feedback(False, f"arm_{cmd.lower()}", f"joint_fault:{fault_joints}")
+                return
+            
+            self._publish_feedback(True, f"arm_{cmd.lower()}", "")
+            
+        except Exception as exc:
+            self.get_logger().error(f"SPI transfer failed: {exc}")
+            self._publish_feedback(False, f"arm_{cmd.lower()}", f"spi_error:{exc}")
 
     def _on_gripper_command(self, msg: GripperCommand):
         cmd = msg.command.upper()
@@ -269,19 +399,36 @@ class EmbeddedInterfaceNode(Node):
             self._publish_feedback(False, f"gripper_{cmd.lower()}", "unsupported_command")
             return
 
-        goal = self._build_trajectory(GRIPPER_JOINT_NAMES, [position], DEFAULT_GRIPPER_DURATION)
-        phase = f"gripper_{cmd.lower()}"
-        self._send_goal_async(self._gripper_client, goal, phase, gripper_force=force)
+        # Route to sim or hardware path
+        if self._interface_mode == "sim":
+            goal = self._build_trajectory(GRIPPER_JOINT_NAMES, [position], DEFAULT_GRIPPER_DURATION)
+            phase = f"gripper_{cmd.lower()}"
+            self._send_goal_async(self._gripper_client, goal, phase, gripper_force=force)
+        else:
+            # Hardware path: gripper is controlled via joint 5 (wrist_3) or separate SPI command
+            # For now, publish success — actual gripper hardware integration TBD
+            self._publish_feedback(True, f"gripper_{cmd.lower()}", "", gripper_force=force)
 
     def _on_estop(self, _msg: EmergencySignal):
         with self._lock:
             self._estop = True
-        # Best-effort cancel of any in-flight goals (controllers will halt).
-        try:
-            self._arm_client.cancel_all_goals_async()
-            self._gripper_client.cancel_all_goals_async()
-        except Exception:
-            pass
+        
+        if self._interface_mode == "hardware" and self._spi_device is not None:
+            # Send ESTOP via SPI: pack JointCmd with estop=1
+            try:
+                cmd_bytes = struct.pack('<6f B', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1)
+                self._spi_device.xfer2(list(cmd_bytes) + [0] * (SPI_PACKET_BYTES - len(cmd_bytes)))
+                self.get_logger().info("ESTOP sent via SPI to Teensy")
+            except Exception as exc:
+                self.get_logger().error(f"Failed to send ESTOP via SPI: {exc}")
+        else:
+            # Sim path: cancel in-flight goals (controllers will halt)
+            try:
+                self._arm_client.cancel_all_goals_async()
+                self._gripper_client.cancel_all_goals_async()
+            except Exception:
+                pass
+        
         self._publish_feedback(False, "estop", "Emergency stop active")
 
 

@@ -1,10 +1,7 @@
 import re
 from typing import Tuple, List
 
-VALID_TOOLS = [
-    "cream", "scissors", "forceps",
-    "thermometer", "oximeter", "plaster",
-]
+from acare_bringup.constants import VALID_TOOLS
 
 FILLER_WORDS = [
     r"\bum\b", r"\buh\b", r"\ber\b", r"\behm\b",
@@ -21,6 +18,7 @@ SIMPLE_ALIASES = {
     "pulse ox":       "oximeter",
     "spo2":           "oximeter",
     "band aid":       "plaster",
+    "band-aid":       "plaster",
     "bandaid":        "plaster",
     "adhesive strip": "plaster",
     "lotion":         "cream",

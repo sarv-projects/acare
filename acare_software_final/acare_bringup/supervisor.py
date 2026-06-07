@@ -23,7 +23,7 @@ import time
 import sys
 
 AUTO_RESTART = {'log_node', 'admin_node', 'dialogue_node', 'voice_node', 'auth_node'}
-CRITICAL     = {'safety_node', 'embedded_interface_node', 'state_manager', 'planner_node'}
+CRITICAL     = {'safety_node', 'embedded_interface_node', 'state_manager', 'planner_node', 'vision_node'}
 
 # ROS2 node names as they appear in `ros2 node list`
 NODE_ROS_NAMES = {
@@ -90,11 +90,14 @@ def is_node_alive(ros_name: str) -> bool:
 def trigger_estop(reason: str):
     """Publishes an ESTOP signal to /emergency_stop."""
     print(f'[supervisor] TRIGGERING ESTOP: {reason}')
-    subprocess.run([
-        'ros2', 'topic', 'pub', '--once', '/emergency_stop',
-        'acare_msgs/msg/EmergencySignal',
-        f'{{reason: "{reason}", source: "supervisor"}}'
-    ], timeout=5.0)
+    try:
+        subprocess.run([
+            'ros2', 'topic', 'pub', '--once', '/emergency_stop',
+            'acare_msgs/msg/EmergencySignal',
+            f'{{reason: "{reason}", source: "supervisor"}}'
+        ], timeout=5.0)
+    except Exception as e:
+        print(f'[supervisor] Failed to publish ESTOP: {e}')
 
 
 def check_power_recovery():
@@ -128,29 +131,23 @@ def check_power_recovery():
         if last_state in {'EXECUTING', 'HOLDING', 'HANDOVER'}:
             print('[supervisor] POWER_RECOVERY: last state was mid-task. Publishing safe state.')
 
-            # Transition to STANDBY (safe) via state_transition topic
-            subprocess.run([
-                'ros2', 'topic', 'pub', '--once', '/state_transition',
-                'acare_msgs/msg/StateTransition',
-                '{target_state: "STANDBY", reason: "power_recovery"}'
-            ], timeout=5.0)
+            def _pub(topic, msg_type, payload):
+                try:
+                    subprocess.run([
+                        'ros2', 'topic', 'pub', '--once', topic, msg_type, payload
+                    ], timeout=5.0)
+                except Exception as e:
+                    print(f'[supervisor] Failed to publish {topic}: {e}')
 
-            # Announce recovery via TTS
-            subprocess.run([
-                'ros2', 'topic', 'pub', '--once', '/tts_request',
-                'std_msgs/msg/String',
-                '{data: "System recovered from unexpected shutdown. Please verify workspace."}'
-            ], timeout=5.0)
-
-            # Log the recovery event
-            subprocess.run([
-                'ros2', 'topic', 'pub', '--once', '/log_event',
-                'acare_msgs/msg/LogEvent',
-                ('{event_type: "POWER_RECOVERY", user_id: "", tool: "", '
-                 'state: "STANDBY", description: "Recovered from unexpected shutdown", '
-                 'timestamp: 0, voice_e2e_ms: 0, vision_search_ms: 0, '
-                 'motion_ms: 0, total_task_ms: 0, safety_severity: ""}')
-            ], timeout=5.0)
+            _pub('/state_transition', 'acare_msgs/msg/StateTransition',
+                 '{target_state: "STANDBY", reason: "power_recovery"}')
+            _pub('/tts_request', 'std_msgs/msg/String',
+                 '{data: "System recovered from unexpected shutdown. Please verify workspace."}')
+            _pub('/log_event', 'acare_msgs/msg/LogEvent',
+                 ('{event_type: "POWER_RECOVERY", user_id: "", tool: "", '
+                  'state: "STANDBY", description: "Recovered from unexpected shutdown", '
+                  'timestamp: 0, voice_e2e_ms: 0, vision_search_ms: 0, '
+                  'motion_ms: 0, total_task_ms: 0, safety_severity: ""}'))
 
     except Exception as e:
         print(f'[supervisor] Power recovery check failed: {e}')
@@ -187,12 +184,7 @@ def main():
     time.sleep(2.0)   # brief wait for ROS2 graph to initialise after launch
     check_power_recovery()
 
-    print('[supervisor] Starting all ACARE nodes...')
-    for name in NODE_CMDS:
-        start_node(name)
-        time.sleep(0.5)   # stagger starts to avoid race conditions
-
-    print('[supervisor] All nodes started. Beginning health monitoring.')
+    print('[supervisor] All nodes should be started by acare.launch.py. Beginning health monitoring.')
     try:
         monitor()
     except KeyboardInterrupt:

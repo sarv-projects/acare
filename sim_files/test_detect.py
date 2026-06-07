@@ -34,8 +34,8 @@ class ContinuousDetect(Node):
 
         # Load model once
         try:
-            from acare_vision.yolo_infer import YOLOv11ONNX
-            self._model = YOLOv11ONNX(MODEL_PATH, conf_thresh=0.50)
+            from acare_vision.yolo_infer import YOLO26ONNX
+            self._model = YOLO26ONNX(MODEL_PATH, conf_thresh=0.50)
             print(f'Model loaded. Classes: {self._model.class_names}')
             print(f'Running detection every {INTERVAL_S}s — Ctrl+C to stop\n')
         except Exception as e:

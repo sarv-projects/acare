@@ -1,14 +1,12 @@
 import threading
 import time
 
-ESTOP_KEYWORDS = ["stop", "halt", "emergency", "abort", "ruko", "bas"]
+from acare_bringup.constants import ESTOP_KEYWORDS, RECOVERY_KEYWORDS
 
 CONTINUATION_WORDS = [
     "moving", "that", "there", "here", "now", "please",
     "the", "it", "doing", "working", "processing"
 ]
-
-RECOVERY_KEYWORDS = ["resume", "continue", "proceed", "clear", "reset", "go"]
 
 
 class KeywordMonitor:

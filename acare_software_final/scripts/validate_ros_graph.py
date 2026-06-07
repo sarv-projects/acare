@@ -56,10 +56,13 @@ def wait_for_nodes(timeout_s: float = 30.0) -> set[str]:
     deadline = time.monotonic() + timeout_s
     seen: set[str] = set()
     while time.monotonic() < deadline:
-        output = run(["ros2", "node", "list"])
-        seen = {line.strip() for line in output.splitlines() if line.strip()}
-        if EXPECTED_NODES.issubset(seen):
-            return seen
+        try:
+            output = run(["ros2", "node", "list"])
+            seen = {line.strip() for line in output.splitlines() if line.strip()}
+            if EXPECTED_NODES.issubset(seen):
+                return seen
+        except subprocess.CalledProcessError:
+            pass
         time.sleep(1.0)
     return seen
 

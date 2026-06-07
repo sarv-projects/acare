@@ -30,11 +30,7 @@ from acare_bringup.paths import PROBABILITY_MAP_YAML, SYSTEM_YAML
 
 PROB_MAP_PATH = PROBABILITY_MAP_YAML
 
-WORKSPACE = {
-    'xmin': -0.4, 'xmax': 0.4,
-    'ymin': -0.3, 'ymax': 0.3,
-    'zmin':  0.0, 'zmax': 0.5,
-}
+
 
 # All tool classes the model can detect (6 classes, matching trained YOLO model)
 ALL_TOOLS = [
@@ -78,22 +74,33 @@ class NBVSearch:
     provided by the parent vision_node via callbacks set at init.
     """
 
-    def __init__(self, yolo_model, node):
+    def __init__(self, yolo_model, node, localiser=None):
         """
-        yolo_model — YOLOv11ONNX instance
+        yolo_model — YOLO26ONNX instance
         node       — parent VisionNode (for arm commands and logging)
+        localiser  — shared Localiser instance from vision_node (receives live intrinsics)
         """
         self.yolo         = yolo_model
         self.node         = node
         self.fake_detector = FakeDetector()
-        self.localiser    = Localiser()
+        self.localiser    = localiser if localiser is not None else Localiser()
         self.probability_map = self._load_map()
         self.viewpoints   = self._load_viewpoints()
         self.wrist_offsets = self._load_wrist_offsets()
         self.capture_settle_s = self._load_capture_settle_s()
         self.joint_limits_min, self.joint_limits_max = self._load_joint_limits()
+        self.workspace_limits = self._load_workspace_limits()
+        self.arm_link_lengths = self._load_arm_link_lengths()
         # Tracks detections from previous viewpoint for temporal consistency
         self.prev_detections = {}   # class_name → (cx, cy) pixel centre
+        self.last_found_zone = None
+        if self.node:
+            try:
+                from std_msgs.msg import String
+                from acare_bringup.qos_profiles import TOPIC_VISION
+                self.node.create_subscription(String, "/vision_penalty", self._on_vision_penalty, TOPIC_VISION)
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # Map loading and saving
@@ -189,6 +196,45 @@ class NBVSearch:
             return mins, maxs
         except Exception:
             return None, None
+
+    def _load_workspace_limits(self) -> dict:
+        default_ws = {'xmin': -0.4, 'xmax': 0.4, 'ymin': -0.3, 'ymax': 0.6, 'zmin': 0.0, 'zmax': 0.75}
+        if not SYSTEM_YAML.exists():
+            return default_ws
+        try:
+            with open(SYSTEM_YAML) as f:
+                cfg = yaml.safe_load(f) or {}
+            ws = cfg.get('robot', {}).get('workspace', {})
+            if ws:
+                return {
+                    'xmin': float(ws.get('xmin', default_ws['xmin'])), 'xmax': float(ws.get('xmax', default_ws['xmax'])),
+                    'ymin': float(ws.get('ymin', default_ws['ymin'])), 'ymax': float(ws.get('ymax', default_ws['ymax'])),
+                    'zmin': float(ws.get('zmin', default_ws['zmin'])), 'zmax': float(ws.get('zmax', default_ws['zmax']))
+                }
+            return default_ws
+        except Exception:
+            return default_ws
+
+    def _load_arm_link_lengths(self) -> dict:
+        """
+        Loads arm link lengths from system.yaml for FK computation in
+        compute_T_for_viewpoint().  Falls back to defaults from the arm spec.
+        """
+        defaults = {'base_height': 0.352, 'upper_arm': 0.400, 'forearm': 0.400}
+        if not SYSTEM_YAML.exists():
+            return defaults
+        try:
+            with open(SYSTEM_YAML) as f:
+                cfg = yaml.safe_load(f) or {}
+            arm = cfg.get('arm', {})
+            lengths = arm.get('link_lengths', {})
+            return {
+                'base_height': float(lengths.get('base_height', defaults['base_height'])),
+                'upper_arm':   float(lengths.get('upper_arm',   defaults['upper_arm'])),
+                'forearm':     float(lengths.get('forearm',     defaults['forearm'])),
+            }
+        except Exception:
+            return defaults
 
     def save_map(self):
         """
@@ -286,7 +332,12 @@ class NBVSearch:
                     if self.node:
                         self.node.get_logger().warn(f'Fake object rejected: {d["class_name"]}')
                     continue
-                pos = self.localiser.pixel_to_robot(d['bbox'], ref_depth)
+                pos = self.localiser.pixel_to_robot(
+                    d['bbox'], ref_depth,
+                    T_override=self.localiser.compute_T_for_viewpoint(
+                        vp['joint_angles'], self.arm_link_lengths,
+                    ),
+                )
                 if pos is None:
                     continue
                 if not self._in_workspace(pos):
@@ -307,6 +358,7 @@ class NBVSearch:
                 valid.sort(key=lambda d: d.get('rank_score', d['confidence']), reverse=True)
                 best = valid[0]
                 result['found']      = True
+                self.last_found_zone = zone
                 result['x'], result['y'], result['z'] = best['position_3d']
                 result['confidence'] = best['confidence']
                 result['zone']       = zone
@@ -327,6 +379,23 @@ class NBVSearch:
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    def _on_vision_penalty(self, msg):
+        tool = msg.data
+        model_class = REVERSE_CANONICAL.get(tool, tool)
+        zone = self.last_found_zone
+        if zone and zone in self.probability_map:
+            current = self.probability_map[zone].get(model_class, 0.125)
+            self.probability_map[zone][model_class] = max(0.05, current * 0.3)
+            total = sum(self.probability_map[zone].values())
+            if total > 0:
+                for t in self.probability_map[zone]:
+                    self.probability_map[zone][t] /= total
+            # Clamp to [0.05, 0.90]
+            for t in self.probability_map[zone]:
+                v = self.probability_map[zone][t]
+                self.probability_map[zone][t] = min(max(v, 0.05), 0.90)
+            self.save_map()
 
     def _sort_zones(self, model_class: str) -> list:
         """Sort viewpoints by P(tool|zone), highest probability first."""
@@ -497,7 +566,7 @@ class NBVSearch:
     def _in_workspace(self, pos: tuple) -> bool:
         """Returns True if (x, y, z) is within the defined robot workspace."""
         x, y, z = pos
-        w = WORKSPACE
+        w = self.workspace_limits
         return (w['xmin'] <= x <= w['xmax'] and
                 w['ymin'] <= y <= w['ymax'] and
                 w['zmin'] <= z <= w['zmax'])

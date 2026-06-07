@@ -2,7 +2,7 @@
 # Spec Reference: Section XII (Tool Registry — Alias Handling)
 #
 # Maps canonical tool names (what users say) to YOLO model class names
-# (what the detector outputs). The trained YOLOv11 model has 6 classes:
+# (what the detector outputs). The trained YOLO26 model has 6 classes:
 #
 #   Model class name     | Canonical name | What users say
 #   ---------------------|----------------|---------------------------

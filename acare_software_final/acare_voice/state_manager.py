@@ -17,6 +17,27 @@ class SystemState(Enum):
     ERROR       = "ERROR"
 
 
+# Mapping from ROS2 robot states to voice FSM states
+ROS2_TO_VOICE_STATE = {
+    'OFFLINE':     SystemState.ERROR,
+    'LOGGED_OUT':  SystemState.IDLE,
+    'STANDBY':     SystemState.IDLE,
+    'LISTENING':   SystemState.LISTENING,
+    'PROCESSING':  SystemState.PROCESSING,
+    'EXECUTING':   SystemState.ASSISTING,
+    'HOLDING':     SystemState.ASSISTING,
+    'HANDOVER':    SystemState.ASSISTING,
+    'ESTOP':       SystemState.ESTOP,
+    'ERROR':       SystemState.ERROR,
+}
+
+# Voice states that should trigger ROS2 state transitions
+VOICE_TO_ROS2_TRANSITION = {
+    SystemState.ESTOP: 'ESTOP',
+    SystemState.ERROR: 'ERROR',
+}
+
+
 @dataclass
 class StateContext:
     pending_intent: Optional[Dict] = None
@@ -57,6 +78,7 @@ class StateManager:
         self._transition_callbacks: List[Callable] = []
         self._state_entry_time = time.time()
         self._state_history: List[tuple] = []
+        self._transition_publisher: Optional[Callable[[str, str], None]] = None
 
     @property
     def state(self) -> SystemState:
@@ -82,8 +104,11 @@ class StateManager:
         with self._lock:
             old_state = self._state
             if new_state not in self.VALID_TRANSITIONS.get(old_state, []):
+                # ESTOP and ERROR are always reachable from ANY state — safety overrides
                 if new_state == SystemState.ESTOP:
-                    pass
+                    print(f"[StateManager] ESTOP triggered: {old_state.value} -> {new_state.value} ({reason})")
+                elif new_state == SystemState.ERROR:
+                    print(f"[StateManager] ERROR triggered: {old_state.value} -> {new_state.value} ({reason})")
                 else:
                     print(f"[StateManager] INVALID transition: {old_state.value} -> {new_state.value} ({reason})")
                     return False
@@ -103,6 +128,11 @@ class StateManager:
                     cb(old_state, new_state, self._context)
                 except Exception as e:
                     print(f"[StateManager] Transition callback error: {e}")
+            
+            # Notify ROS2 FSM of critical state transitions
+            if new_state in VOICE_TO_ROS2_TRANSITION:
+                self._notify_ros2_transition(new_state, reason)
+            
             return True
 
     def on_state(self, state: SystemState, callback: Callable):
@@ -142,6 +172,46 @@ class StateManager:
         with self._lock:
             self._context.clarification_attempts += 1
             return self._context.clarification_attempts >= self._context.max_clarification_attempts
+
+    def sync_from_ros2_state(self, ros2_state: str):
+        """
+        Sync voice FSM from ROS2 /robot_state topic.
+        Maps ROS2 robot states to voice FSM states.
+        Called by voice node when receiving /robot_state updates.
+        """
+        voice_state = ROS2_TO_VOICE_STATE.get(ros2_state)
+        if voice_state is None:
+            print(f"[StateManager] Unknown ROS2 state: {ros2_state}")
+            return
+        
+        # Only sync if it's a meaningful state change (not internal voice states)
+        if voice_state in (SystemState.ESTOP, SystemState.ERROR, SystemState.IDLE):
+            with self._lock:
+                if self._state != voice_state:
+                    print(f"[StateManager] ROS2 sync: {ros2_state} → {voice_state.value}")
+                    self.transition(voice_state, f"ros2_sync:{ros2_state}")
+
+    def set_transition_publisher(self, publisher_fn: Callable[[str, str], None]):
+        """
+        Set callback function to publish state transitions to /state_transition.
+        Called when voice FSM enters critical states (ESTOP, ERROR).
+        
+        publisher_fn signature: fn(target_state: str, reason: str)
+        """
+        self._transition_publisher = publisher_fn
+
+    def _notify_ros2_transition(self, voice_state: SystemState, reason: str):
+        """
+        Publish state transition to ROS2 FSM when voice FSM enters critical state.
+        Called automatically by transition() for states in VOICE_TO_ROS2_TRANSITION.
+        """
+        ros2_target = VOICE_TO_ROS2_TRANSITION.get(voice_state)
+        if ros2_target and self._transition_publisher is not None:
+            try:
+                self._transition_publisher(ros2_target, f"voice_fsm:{reason}")
+                print(f"[StateManager] Published ROS2 transition: {ros2_target} (voice:{voice_state.value})")
+            except Exception as e:
+                print(f"[StateManager] Failed to publish ROS2 transition: {e}")
 
 
 _state_manager_instance: Optional[StateManager] = None

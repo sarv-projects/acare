@@ -18,4 +18,11 @@ cleanup() {
 trap cleanup EXIT
 
 sleep 10
+
+# Verify launch process is still alive before validation
+if ! kill -0 "${LAUNCH_PID}" 2>/dev/null; then
+  echo "ERROR: ros2 launch process died during startup. Check /tmp/acare_launch.log"
+  exit 1
+fi
+
 python3 "${ROOT_DIR}/scripts/validate_ros_graph.py"

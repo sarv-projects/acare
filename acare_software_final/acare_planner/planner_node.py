@@ -1,9 +1,9 @@
-from __future__ import annotations
-
-import json
+# acare_planner/planner_node.py
+import queue
 import threading
 import time
-from dataclasses import dataclass, field
+import json
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -11,927 +11,256 @@ from std_msgs.msg import String
 
 from acare_bringup.paths import SYSTEM_YAML
 from acare_msgs.msg import (
-    ArmCommand,
-    AuthResult,
-    GripperCommand,
-    HandStatus,
-    LogEvent,
-    MotionFeedback,
-    RobotState,
-    SafetyAlert,
-    StateTransition,
-    Transcript,
-    ValidatedIntent,
-    VisionResult,
-    VisionSearchRequest,
-    VisionStatus,
+    ArmCommand, GripperCommand, VisionSearchRequest, StateTransition, LogEvent,
+    ValidatedIntent, VisionResult, MotionFeedback, HandStatus, SafetyAlert,
+    RobotState, AuthResult, Transcript, VisionStatus, AuthRequest
 )
 
-from .ik_solver import IKSolver
 from .agentic_planner import AgenticPlanner
-from .agent_schema import (
-    AbortCommand,
-    ArmMoveCommand,
-    GripperCommandSchema,
-    SafeDepositCommand,
-    SafeLimitSchema,
-    SpeechCommand,
-    TransitionCommand,
-    VisionSearchCommand,
-    validate_agentic_decision,
-)
+from .tool_kernel import ToolKernel
+from .state_snapshot import TaskSnapshot, WorldState as WorldSnapshot, TaskObjective, Budget, LastAction
+from .voice_sync import VoiceSyncBridge
+from .hw_translator import HWTranslator
+from .task_memory import TaskMemory
+from .ik_solver import IKSolver
+from .safety_kernel import SafetyKernel, RetryCounters
+
 from acare_bringup.qos_profiles import (
     TOPIC_COMMAND, TOPIC_SENSOR, TOPIC_STATE, TOPIC_VISION,
     TOPIC_VOICE_PIPELINE, TOPIC_LOGGING, TOPIC_TTS,
 )
 
-MAX_RETRIES = 3
-HANDOVER_TIMEOUT_S = 30.0
-# Dynamic palm tracking: velocity during incremental approach (very slow, contact-safe)
-PALM_APPROACH_VELOCITY = 0.3
-# Minimum distance change (metres) before arm moves toward palm — prevents jitter
-PALM_TRACKING_MIN_DELTA_M = 0.02
-
-
-@dataclass
 class WorldState:
-    robot_state: str = "LOGGED_OUT"
-    active_user_id: str = ""
-    safety_severity: str = ""
-    vision_status: str = "UNKNOWN"
-    network_ok: bool = True
-    arm_holding: bool = False
-    gripper_force: float = 0.0
-
-
-@dataclass
-class TaskContext:
-    tool: str = ""
-    user_id: str = ""
-    user_name: str = ""
-    pipeline_start: float = 0.0
-    vision_start: float = 0.0
-    motion_start: float = 0.0
-    grasp_point: tuple[float, float, float] | None = None
-    detection_candidates: list[dict] = field(default_factory=list)
-    alternate_orientation_tried: bool = False
-    vision_retries: int = 0
-    grasp_retries: int = 0
-    face_retries: int = 0
-
+    def __init__(self):
+        self.robot_state = "LOGGED_OUT"
+        self.active_user_id = ""
+        self.safety_severity = "OK"
+        self.vision_status = "UNKNOWN"
+        self.network_ok = True
+        self.arm_holding = False
+        self.gripper_force = 0.0
 
 class PlannerNode(Node):
     def __init__(self):
         super().__init__("planner_node")
         self.world = WorldState()
-        self.context = TaskContext()
-        self.ik = IKSolver()
         self.agentic = AgenticPlanner(logger=self.get_logger())
+        self.hw_translator = HWTranslator()
+        self.task_memory = TaskMemory()
+        self.voice_sync = VoiceSyncBridge()
+        self.ik = IKSolver()
+        
+        # Publishers
+        self.search_pub = self.create_publisher(VisionSearchRequest, "/vision_search_request", TOPIC_VISION)
+        self.transition_pub = self.create_publisher(StateTransition, "/state_transition", TOPIC_STATE)
+        self.arm_pub = self.create_publisher(ArmCommand, "/arm_command", TOPIC_COMMAND)
+        self.gripper_pub = self.create_publisher(GripperCommand, "/gripper_command", TOPIC_COMMAND)
+        self.tts_pub = self.create_publisher(String, "/tts_request", TOPIC_TTS)
+        self.log_pub = self.create_publisher(LogEvent, "/log_event", TOPIC_LOGGING)
+        self.vision_penalty_pub = self.create_publisher(String, "/vision_penalty", TOPIC_VISION)
+        self.auth_req_pub = self.create_publisher(AuthRequest, "/auth_request", TOPIC_STATE)
 
-        # Publishers — QoS per spec Section V
-        self.search_pub     = self.create_publisher(VisionSearchRequest, "/vision_search_request", TOPIC_VISION)
-        self.transition_pub = self.create_publisher(StateTransition,     "/state_transition",      TOPIC_STATE)
-        self.arm_pub        = self.create_publisher(ArmCommand,          "/arm_command",           TOPIC_COMMAND)
-        self.gripper_pub    = self.create_publisher(GripperCommand,      "/gripper_command",       TOPIC_COMMAND)
-        self.tts_pub        = self.create_publisher(String,              "/tts_request",           TOPIC_TTS)
-        self.log_pub        = self.create_publisher(LogEvent,            "/log_event",             TOPIC_LOGGING)
-
-        # Subscribers — QoS per spec Section V
+        # Subscribers
         self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, TOPIC_VOICE_PIPELINE)
-        self.create_subscription(VisionResult,    "/vision_result",    self._on_vision_result,    TOPIC_VISION)
-        self.create_subscription(MotionFeedback,  "/motion_feedback",  self._on_motion_feedback,  TOPIC_SENSOR)
-        self.create_subscription(HandStatus,      "/hand_status",      self._on_hand_status,      TOPIC_VISION)
-        self.create_subscription(SafetyAlert,     "/safety_alert",     self._on_safety_alert,     TOPIC_STATE)
-        self.create_subscription(RobotState,      "/robot_state",      self._on_robot_state,      TOPIC_STATE)
-        self.create_subscription(AuthResult,      "/auth_result",      self._on_auth_result,      TOPIC_VOICE_PIPELINE)
-        self.create_subscription(Transcript,      "/raw_transcript",   self._on_transcript,       TOPIC_VOICE_PIPELINE)
-        self.create_subscription(VisionStatus,    "/vision_status",    self._on_vision_status,    TOPIC_VISION)
+        self.create_subscription(VisionResult, "/vision_result", self._on_vision_result, TOPIC_VISION)
+        self.create_subscription(MotionFeedback, "/motion_feedback", self._on_motion_feedback, TOPIC_SENSOR)
+        self.create_subscription(HandStatus, "/hand_status", self._on_hand_status, TOPIC_VISION)
+        self.create_subscription(SafetyAlert, "/safety_alert", self._on_safety_alert, TOPIC_STATE)
+        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE)
+        self.create_subscription(AuthResult, "/auth_result", self._on_auth_result, TOPIC_VOICE_PIPELINE)
+        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, TOPIC_VOICE_PIPELINE)
+        self.create_subscription(VisionStatus, "/vision_status", self._on_vision_status, TOPIC_VISION)
 
         self._lock = threading.Lock()
         self._task_thread = None
         self._vision_event = threading.Event()
-        self._motion_event = threading.Event()
-        self._auth_face_event = threading.Event()
-        self._latest_vision_result: VisionResult | None = None
-        self._motion_success = False
-        self._latest_hand_status: HandStatus | None = None
-        self._face_verified = False
-        self._face_skipped = False
-        self._voice_confirm_word = ""
-        self._handover_height_adjustment = 0.0
-        self._safe_drop_zone, self._handover_zone = self._load_robot_points()
+        self._motion_queue = queue.Queue(maxsize=1)
+        self._auth_event = threading.Event()
+        self._estop_active = threading.Event()
+        
+        self._last_vision_result = None
+        self._last_auth_success = False
+        self._hand_detected = False
+        self._last_approach_rotation = 0.0
+
+        # Load configs
         self._workspace = self._load_workspace()
-        self._kiosk_rest_pose, self._kiosk_interaction_pose, self._kiosk_return_timeout_s = self._load_kiosk_poses()
-        self.safe_limits = self._load_safe_limits()
-        self._presentation_timer = None
-        self._current_named_pose = ""
-        self._estop_active = threading.Event()   # signals running task to abort
+        self.face_verify_z, self.presentation_z = self._load_z_heights()
+
+        self.safety_kernel = SafetyKernel(self._workspace)
+        self.retry_counters = RetryCounters()
+        
+        self.context = type('TaskContext', (), {'tool': '', 'user_id': '', 'grasp_point': None})()
         self.get_logger().info("Planner node ready")
 
-    def _load_workspace(self) -> dict:
-        """Load reachable workspace bounds from system.yaml (single source of truth)."""
-        default = {'xmin': -0.6, 'xmax': 0.6, 'ymin': -0.6, 'ymax': 0.6, 'zmin': 0.0, 'zmax': 0.75}
+    def _load_workspace(self):
         try:
-            import yaml
             with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
                 cfg = yaml.safe_load(handle) or {}
             ws = cfg.get("robot", {}).get("workspace", {})
             if ws:
-                return {k: float(ws.get(k, default[k])) for k in default}
-        except Exception:
+                return {k: float(ws.get(k, 0.0)) for k in ['xmin', 'xmax', 'ymin', 'ymax', 'zmin', 'zmax']}
+        except:
             pass
-        return default
+        return {'xmin': -0.6, 'xmax': 0.6, 'ymin': -0.6, 'ymax': 0.6, 'zmin': 0.0, 'zmax': 0.75}
 
-    def _load_robot_points(self):
+    def _load_z_heights(self):
         try:
-            import yaml
-
             with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
                 cfg = yaml.safe_load(handle) or {}
             robot = cfg.get("robot", {})
-            drop = robot.get("safe_drop_zone", {"x": 0.0, "y": 0.35, "z": 0.05})
-            hand = robot.get("handover_zone", {"x": 0.0, "y": 0.40, "z": 0.10})
-            return (
-                (float(drop["x"]), float(drop["y"]), float(drop["z"])),
-                (float(hand["x"]), float(hand["y"]), float(hand["z"])),
-            )
-        except Exception:
-            return (0.0, 0.35, 0.05), (0.0, 0.40, 0.10)
-
-    def _load_kiosk_poses(self):
-        try:
-            import yaml
-
-            with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
-                cfg = yaml.safe_load(handle) or {}
-            robot = cfg.get("robot", {})
-            arm = cfg.get("arm", {})
-            rest = [float(v) for v in arm.get("kiosk_rest_joint_angles", [0.0, 0.15, -0.35, 0.0, 0.10, 0.0])]
-            interaction = [float(v) for v in arm.get("kiosk_interaction_joint_angles", [0.0, -0.10, -0.05, 0.0, -0.05, 0.0])]
-            timeout_s = float(robot.get("kiosk_return_to_rest_seconds", 12.0))
-            if len(rest) != 6 or len(interaction) != 6:
-                raise ValueError("Kiosk poses must contain 6 joint angles each")
-            return rest, interaction, max(3.0, timeout_s)
-        except Exception:
-            return [0.0, 0.15, -0.35, 0.0, 0.10, 0.0], [0.0, -0.10, -0.05, 0.0, -0.05, 0.0], 12.0
-
-    def _load_safe_limits(self) -> SafeLimitSchema:
-        try:
-            import yaml
-            from acare_bringup.paths import THRESHOLDS_YAML
-
-            with open(THRESHOLDS_YAML, "r", encoding="utf-8") as handle:
-                threshold_cfg = yaml.safe_load(handle) or {}
-            with open(SYSTEM_YAML, "r", encoding="utf-8") as handle:
-                system_cfg = yaml.safe_load(handle) or {}
-            safety = threshold_cfg.get("safety", {})
-            soft = system_cfg.get("arm", {}).get("control_soft_limits", {}) or {}
-            velocity_hard = float(safety.get("velocity_limit_degs", 120.0))
-            current_hard = float(safety.get("current_limit_A", 8.0))
-            temperature_hard = float(safety.get("temperature_estop_C", 75.0))
-            gripper_force_hard = float(safety.get("gripper_force_limit_N", 15.0))
-            velocity_soft_ratio = float(soft.get("velocity_soft_ratio", 0.90))
-            current_soft_margin = float(soft.get("current_soft_margin_a", 0.50))
-            temperature_soft_margin = float(soft.get("temperature_soft_margin_c", 5.0))
-            gripper_force_soft_ratio = float(soft.get("gripper_force_soft_ratio", 0.90))
-            return SafeLimitSchema(
-                velocity_hard_deg_s=velocity_hard,
-                velocity_soft_deg_s=max(5.0, velocity_hard * velocity_soft_ratio),
-                current_hard_a=current_hard,
-                current_soft_a=max(0.1, current_hard - current_soft_margin),
-                temperature_hard_c=temperature_hard,
-                temperature_soft_c=max(5.0, temperature_hard - temperature_soft_margin),
-                gripper_force_hard_n=gripper_force_hard,
-                gripper_force_soft_n=max(0.5, gripper_force_hard * gripper_force_soft_ratio),
-                max_command_velocity_scale=float(soft.get("max_command_velocity_scale", 0.85)),
-                max_command_accel_limit=float(soft.get("max_command_accel_limit", 0.25)),
-                kiosk_velocity_scale=float(soft.get("kiosk_velocity_scale", 0.22)),
-                kiosk_accel_limit=float(soft.get("kiosk_accel_limit", 0.10)),
-            )
-        except Exception:
-            return SafeLimitSchema(
-                velocity_hard_deg_s=120.0,
-                velocity_soft_deg_s=108.0,
-                current_hard_a=8.0,
-                current_soft_a=7.5,
-                temperature_hard_c=75.0,
-                temperature_soft_c=70.0,
-                gripper_force_hard_n=15.0,
-                gripper_force_soft_n=13.5,
-                max_command_velocity_scale=0.85,
-                max_command_accel_limit=0.25,
-                kiosk_velocity_scale=0.22,
-                kiosk_accel_limit=0.10,
-            )
-
-    def _speak(self, text: str):
-        cmd = SpeechCommand(text=text)
-        self.tts_pub.publish(String(data=cmd.text))
-
-    def _transition_state(self, target: str, reason: str):
-        cmd = TransitionCommand(target_state=target, reason=reason)
-        msg = StateTransition()
-        msg.target_state = cmd.target_state
-        msg.reason = cmd.reason
-        self.transition_pub.publish(msg)
-
-    def _log_event(self, event_type: str, tool: str = "", description: str = ""):
-        msg = LogEvent()
-        msg.event_type = event_type
-        msg.user_id = self.context.user_id
-        msg.tool = tool or self.context.tool
-        msg.state = self.world.robot_state
-        msg.description = description
-        msg.timestamp = int(time.time() * 1000)
-        msg.voice_e2e_ms = 0
-        msg.vision_search_ms = int((time.monotonic() - self.context.vision_start) * 1000) if self.context.vision_start else 0
-        msg.motion_ms = int((time.monotonic() - self.context.motion_start) * 1000) if self.context.motion_start else 0
-        msg.total_task_ms = int((time.monotonic() - self.context.pipeline_start) * 1000) if self.context.pipeline_start else 0
-        msg.safety_severity = self.world.safety_severity
-        self.log_pub.publish(msg)
-
-    def _cancel_presentation_timer(self):
-        if self._presentation_timer:
-            self._presentation_timer.cancel()
-            self._presentation_timer = None
-
-    def _schedule_return_to_rest(self):
-        self._cancel_presentation_timer()
-        self._presentation_timer = threading.Timer(self._kiosk_return_timeout_s, self._return_to_rest_if_logged_out)
-        self._presentation_timer.daemon = True
-        self._presentation_timer.start()
-
-    def _return_to_rest_if_logged_out(self):
-        with self._lock:
-            if self.world.robot_state == "LOGGED_OUT":
-                self._send_named_pose("rest")
-
-    def _send_named_pose(self, pose_name: str) -> bool:
-        if pose_name == self._current_named_pose:
-            return True
-        joint_angles = self._kiosk_rest_pose if pose_name == "rest" else self._kiosk_interaction_pose
-        ok = self._send_joint_pose(
-            joint_angles,
-            velocity_scale=self.safe_limits.kiosk_velocity_scale,
-            accel_limit=self.safe_limits.kiosk_accel_limit,
-        )
-        if ok:
-            self._current_named_pose = pose_name
-        return ok
-
-    def _send_joint_pose(self, joint_angles: list[float], velocity_scale: float, accel_limit: float) -> bool:
-        cmd = ArmCommand()
-        cmd.command = "MOVE"
-        cmd.joint_angles = [float(v) for v in joint_angles]
-        cmd.velocity_scale = min(float(velocity_scale), self.safe_limits.max_command_velocity_scale)
-        cmd.accel_limit = min(float(accel_limit), self.safe_limits.max_command_accel_limit)
-        cmd.blocking = True
-        self._motion_event.clear()
-        self.arm_pub.publish(cmd)
-        if not self._motion_event.wait(timeout=15.0):
-            return False
-        return self._motion_success
+            return float(robot.get("face_verify_z", 0.85)), float(robot.get("presentation_z", 0.45))
+        except:
+            return 0.85, 0.45
 
     def _on_validated_intent(self, msg: ValidatedIntent):
         with self._lock:
             if self._task_thread and self._task_thread.is_alive():
                 self._speak("Task already in progress.")
                 return
-            self.context = TaskContext(
-                tool=msg.tool,
-                user_id=msg.user_id,
-                user_name=msg.name,
-                pipeline_start=time.monotonic(),
-            )
+            # TODO(Architectural Upgrade): Using a python threading.Thread for the agentic loop is ad-hoc 
+            # and lacks native ROS preemption. Best robotics practices dictate migrating this to a ROS2 Action Server.
             self._task_thread = threading.Thread(
-                target=self._execute_fetch_task,
+                target=self._run_agentic_task,
                 args=(msg.tool, msg.user_id, msg.name),
                 daemon=True,
             )
             self._task_thread.start()
 
+    def _run_agentic_task(self, tool: str, user_id: str, user_name: str):
+        self._estop_active.clear()
+
+        if self.world.safety_severity == "ESTOP":
+            self._speak("Emergency stop active. Cannot start task.")
+            return
+
+        with self._lock:
+            self._last_vision_result = None
+            self._hand_detected = False
+
+        self.retry_counters.reset()
+        self.safety_kernel.reset_failures()
+
+        self.context.tool = tool
+        self.context.user_id = user_id
+        self.context.grasp_point = None
+
+        prior = self.task_memory.get_user_prior(user_id)
+        
+        snapshot = TaskSnapshot(
+            objective=TaskObjective(tool=tool, user=user_name, task_phase="SEARCHING"),
+            world=WorldSnapshot(
+                arm_at="REST",
+                gripper="OPEN",
+                safety=self.world.safety_severity,
+                holding_tool=self.world.arm_holding,
+                vision_ready=(self.world.vision_status == "READY")
+            ),
+            last_action=LastAction(tool_call="", result="", reason=""),
+            action_history=[],
+            budget=Budget(calls_used=0, calls_remaining=20),
+            tried_and_failed=[],
+            zones_searched=[],
+            user_prior=prior,
+            available_tools=["vision_scan", "arm_move", "arm_approach", "gripper_close", "gripper_open", "detect_face", "detect_hand", "speak", "ask_user", "complete_task", "abort_task"]
+        )
+
+        tk = ToolKernel(self, snapshot, self.hw_translator)
+        self.transition_pub.publish(StateTransition(target_state="EXECUTING"))
+        self.agentic.run_task(self, tk, snapshot)
+        
+        if self._estop_active.is_set():
+            self.transition_pub.publish(StateTransition(target_state="STANDBY"))
+        else:
+            if snapshot.last_action.tool_call and snapshot.last_action.tool_call.startswith("complete_task"):
+                self.task_memory.save_outcome(user_id, tool, self._last_vision_result.zone if self._last_vision_result else None, True)
+            self.transition_pub.publish(StateTransition(target_state="STANDBY"))
+            
+        self.context.tool = ""
+        self.context.user_id = ""
+
+    def _on_transcript(self, msg: Transcript):
+        self.voice_sync.on_transcript(msg.text or "")
+        
     def _on_vision_result(self, msg: VisionResult):
-        self._latest_vision_result = msg
+        with self._lock:
+            self._last_vision_result = msg
         self._vision_event.set()
 
     def _on_motion_feedback(self, msg: MotionFeedback):
         self.world.gripper_force = float(msg.gripper_force)
-        self.world.arm_holding = self.world.gripper_force > 0.5 or self.world.arm_holding
-        self._motion_success = bool(msg.success)
-        self._motion_event.set()
+        try:
+            self._motion_queue.put_nowait(bool(msg.success))
+        except queue.Full:
+            pass
 
     def _on_hand_status(self, msg: HandStatus):
-        self._latest_hand_status = msg
+        with self._lock:
+            self._hand_detected = bool(msg.hand_detected and msg.is_open and msg.hand_approaching)
 
     def _on_safety_alert(self, msg: SafetyAlert):
         self.world.safety_severity = msg.severity
-        self._log_event("SAFETY_ALERT", description=f"{msg.source}: {msg.reason}")
         if msg.severity == "ESTOP":
-            self._handle_estop(msg.reason)
+            self._estop_active.set()
+            self._vision_event.set()
+            self._auth_event.set()
+            try:
+                self._motion_queue.put_nowait(False)
+            except queue.Full:
+                pass
+            
+            if self.world.arm_holding:
+                # During an ESTOP, the hardware controller freezes the arm instantly. 
+                # Sending a RELEASE command here will be rejected by the embedded_interface_node.
+                # We MUST retain self.world.arm_holding = True so the system remembers it holds a sharp tool.
+                pass
 
     def _on_robot_state(self, msg: RobotState):
         self.world.robot_state = msg.state
         self.world.active_user_id = msg.active_user_id
-        if msg.state == "LOGGED_OUT":
-            self._send_gripper_open()
-            self._send_named_pose("rest")
-            self._schedule_return_to_rest()
-        else:
-            self._cancel_presentation_timer()
 
     def _on_auth_result(self, msg: AuthResult):
-        if self.context.user_id and msg.user_id == self.context.user_id:
-            self._face_verified = bool(msg.face_verified)
-            if msg.face_verified:
-                self._auth_face_event.set()
-
-    def _on_transcript(self, msg: Transcript):
-        word = (msg.text or "").strip().lower()
-        if word and self.world.robot_state == "LOGGED_OUT":
-            self._send_named_pose("interaction")
-            self._schedule_return_to_rest()
-        if word in {"take", "yes", "got it", "ok", "okay"}:
-            self._voice_confirm_word = word
-        elif word == "lower":
-            self._handover_height_adjustment -= 0.05
-        elif word == "higher":
-            self._handover_height_adjustment += 0.05
+        self._last_auth_success = bool(msg.face_verified)
+        self._auth_event.set()
 
     def _on_vision_status(self, msg: VisionStatus):
         self.world.vision_status = msg.status
 
-    def _check_world_state(self) -> bool:
-        if self.world.safety_severity == "ESTOP":
-            self._speak("Emergency stop active.")
-            return False
-        if self.world.vision_status in {"LOADING", "ERROR"}:
-            self._speak("System initialising. Please wait.")
-            timeout = time.monotonic() + 30.0
-            while time.monotonic() < timeout and self.world.vision_status == "LOADING":
-                time.sleep(0.1)
-            if self.world.vision_status != "READY":
-                return False
-        if not self.world.network_ok:
-            self._speak("Voice service unavailable.")
-            return False
-        return True
-
-    def _execute_fetch_task(self, tool: str, user_id: str, user_name: str):
-        # Reset per-task state so nothing leaks from a previous task.
-        self._estop_active.clear()
-        self._handover_height_adjustment = 0.0
-        self._voice_confirm_word = ""
-        try:
-            if not self._check_world_state():
-                self._abort_task("System not ready for task execution.")
-                return
-
-            if self._estop_active.is_set():
-                return
-
-            self._transition_state("PROCESSING", f"processing_{tool}")
-            self._send_gripper_open()
-            if not self._phase_vision_search(tool, user_id):
-                if self._estop_active.is_set():
-                    return
-                self._abort_task(f"Cannot locate {tool}. Can you confirm it is on the tray?")
-                return
-
-            if self._estop_active.is_set():
-                return
-
-            self._transition_state("EXECUTING", f"executing_{tool}")
-            if not self._phase_grasp(tool):
-                if self._estop_active.is_set():
-                    return
-                self._abort_task(f"Unable to grasp {tool}. Please reposition it.")
-                return
-
-            if self._estop_active.is_set():
-                return
-
-            if not self._phase_handover(tool, user_id, user_name):
-                if self._estop_active.is_set():
-                    return
-                self._speak(f"No collection detected. Returning {tool} to tray.")
-                self._safe_deposit(tool)
-                return
-
-            self._log_success()
-            self._speak("Handover complete. Is there anything else?")
-            self._transition_state("STANDBY", f"handover_complete_{tool}")
-        finally:
-            self.context = TaskContext()
-
-    def _phase_vision_search(self, tool: str, user_id: str) -> bool:
-        """
-        Agentic vision search with LLM-based strategy and recovery.
-        Every agentic proposal is schema-validated before use.
-        Invalid proposals → deterministic fallback activates.
-        """
-        from datetime import datetime
-        current_hour = datetime.now().hour
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            self.context.vision_retries = attempt
-            self.context.vision_start = time.monotonic()
-
-            if attempt == 1:
-                raw_strategy = self.agentic.propose_search_strategy(
-                    tool, user_id, current_hour, attempt
-                )
-                validated = validate_agentic_decision(raw_strategy)
-                if validated:
-                    self._speak(validated.tts_message)
-                    reset_map = validated.params.reset_probability_map
-                    priority_zones = validated.params.priority_zones
-                else:
-                    # Schema validation failed — use safe defaults
-                    self.get_logger().warn("Agentic search strategy failed validation — using defaults")
-                    self._speak(f"Searching for {tool}.")
-                    reset_map = False
-                    priority_zones = []
-            else:
-                raw_recovery = self.agentic.propose_vision_recovery(
-                    tool, attempt, self.world.safety_severity, self.world.network_ok
-                )
-                validated = validate_agentic_decision(raw_recovery)
-                if validated:
-                    self._speak(validated.tts_message)
-                    action = validated.action.value
-                    reset_map = validated.params.reset_probability_map
-                    priority_zones = validated.params.priority_zones
-                else:
-                    # Fallback: deterministic escalation
-                    self.get_logger().warn(f"Agentic vision recovery attempt {attempt} failed validation")
-                    if attempt == 2:
-                        self._speak(f"Still searching for {tool}. Please keep the tray clear.")
-                    else:
-                        self._speak(f"Last attempt to find {tool}.")
-                    action = "RETRY_UNIFORM_SEARCH"
-                    reset_map = (attempt == MAX_RETRIES)
-                    priority_zones = []
-
-                if validated and validated.action.value == "ASK_USER_CONFIRM_LOCATION":
-                    time.sleep(5.0)
-
-            if self._execute_vision_search(tool, reset_probability_map=reset_map, priority_zones=priority_zones):
-                self.agentic.learn_from_success(
-                    type('Ctx', (), {'tool_canonical': tool, 'zone_found': self._get_last_zone()})(),
-                    user_id
-                )
-                return True
-
-        return False
-
-    def _get_last_zone(self) -> str:
-        """Get zone from last vision result for learning."""
-        if self._latest_vision_result and self._latest_vision_result.found:
-            return self._latest_vision_result.zone
-        return ""
-
-    def _execute_vision_search(self, tool: str, reset_probability_map: bool, priority_zones: list[str]) -> bool:
-        cmd = VisionSearchCommand(
-            tool=tool,
-            reset_probability_map=bool(reset_probability_map),
-            priority_zones=list(priority_zones),
-        )
-        req = VisionSearchRequest()
-        req.tool = cmd.tool
-        req.reset_probability_map = cmd.reset_probability_map
-        req.priority_zones = cmd.priority_zones
-        self._vision_event.clear()
+    def _speak(self, text: str):
+        self.tts_pub.publish(String(data=text))
+        
+    def _send_vision_search_request(self, tool: str, zone: str = 'ALL'):
+        priority_zones = [zone] if zone and zone not in ('ALL', 'AUTO') else []
+        if zone == 'AUTO':
+            priority_zones = ['AUTO']
+        req = VisionSearchRequest(tool=tool, reset_probability_map=False, priority_zones=priority_zones)
         self.search_pub.publish(req)
-        if not self._vision_event.wait(timeout=30.0):
-            return False
-        result = self._latest_vision_result
-        if result is None or not result.found or result.confidence < 0.7:
-            return False
-        self.context.grasp_point = (result.x, result.y, result.z)
-        self.context.detection_candidates = []
-        for candidate in result.candidates_json:
-            try:
-                self.context.detection_candidates.append(json.loads(candidate))
-            except Exception:
-                continue
-        return True
-
-    def _phase_grasp(self, tool: str) -> bool:
-        """
-        Agentic grasp with schema-validated LLM recovery.
-        Every agentic proposal is validated before execution.
-        Invalid proposals → deterministic escalation (reposition → force increase).
-        """
-        base_force = 3.0
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            self.context.grasp_retries = attempt
-
-            if attempt == 1:
-                force_target = base_force
-                rotation_deg = 0.0
-            else:
-                raw_recovery = self.agentic.propose_grasp_recovery(
-                    tool, attempt, self.world.gripper_force, self.world.safety_severity
-                )
-                validated = validate_agentic_decision(raw_recovery)
-                if validated:
-                    self._speak(validated.tts_message)
-                    force_target = base_force + validated.params.force_delta_n
-                    rotation_deg = validated.params.rotation_deg
-                else:
-                    # Deterministic fallback: escalate force by 1N per attempt
-                    self.get_logger().warn(f"Agentic grasp recovery attempt {attempt} failed validation")
-                    self._speak(f"Retrying grasp of {tool}.")
-                    force_target = base_force + (attempt - 1)
-                    rotation_deg = 15.0 * (attempt - 1)
-
-                # Safety clamp — NEVER exceed soft limit regardless of what LLM says
-                force_target = min(force_target, float(self.safe_limits.gripper_force_soft_n))
-
-            if self.context.grasp_point is None:
-                return False
-
-            pregrasp = (
-                self.context.grasp_point[0],
-                self.context.grasp_point[1],
-                self.context.grasp_point[2] + 0.05,
-            )
-            if not self._send_arm_move(pregrasp, velocity_scale=self._velocity_scale() * 0.8):
-                continue
-            if not self._send_arm_move(
-                self.context.grasp_point,
-                velocity_scale=self._velocity_scale() * 0.5,
-                rotation_offset_deg=rotation_deg,
-            ):
-                continue
-            self._send_gripper_grasp(force_target)
-            time.sleep(0.5)
-            self.world.arm_holding = True
-
-            if self.world.gripper_force >= 0.5:
-                self._transition_state("HOLDING", f"holding_{tool}")
-                return True
-
-            # Grasp failed — try next detection candidate if available
-            if self.context.detection_candidates:
-                next_candidate = self.context.detection_candidates.pop(0)
-                self.context.grasp_point = (
-                    float(next_candidate["x"]),
-                    float(next_candidate["y"]),
-                    float(next_candidate["z"]),
-                )
-
-        return False
-
-    def _phase_handover(self, tool: str, user_id: str, user_name: str) -> bool:
-        """
-        Full handover with:
-        - Agentic face recovery (Z-height search via gpt-oss-120b)
-        - Dynamic palm tracking (incremental approach toward /hand_status x,y,z)
-        - Voice confirmation
-        - Safety-validated release gate
-        """
-        self._transition_state("HOLDING", f"move_to_handover_{tool}")
-
-        # Get handover pose with learned user Z-offset
-        z_offset = self.agentic.get_handover_z_offset(user_id)
-        handover_pose = (
-            self._handover_zone[0],
-            self._handover_zone[1],
-            self._handover_zone[2] + z_offset + self._handover_height_adjustment,
-        )
-        if not self._send_arm_move(handover_pose, velocity_scale=self._velocity_scale() * 0.6):
-            return False
-
-        self._transition_state("HANDOVER", f"handover_{tool}")
-        self._speak(f"{tool} ready. Please face the camera.")
-        self._auth_face_event.clear()
-        self._voice_confirm_word = ""
-        self._face_verified = False
-        self._face_skipped = False
-        handover_start = time.monotonic()
-
-        # --- SUBSTATE 1: FACE_VERIFY (agentic Z-height recovery) ---
-        current_z = handover_pose[2]
-        for attempt in range(1, 4):
-            self.context.face_retries = attempt
-            if self._wait_for_face_verify(user_id, timeout=8.0):
-                break
-
-            # Agentic recovery: propose Z adjustment or voice+hand fallback
-            raw_recovery = self.agentic.propose_handover_face_recovery(
-                user_name, tool, attempt, current_z
-            )
-            validated = validate_agentic_decision(raw_recovery)
-            if validated:
-                self._speak(validated.tts_message)
-                action = validated.action.value
-                z_delta = validated.params.z_offset_m
-            else:
-                # Deterministic fallback
-                self.get_logger().warn(f"Agentic handover face recovery attempt {attempt} failed validation")
-                if attempt == 1:
-                    action = "HANDOVER_Z_UP"
-                    z_delta = 0.05
-                    self._speak("Please look at the camera.")
-                elif attempt == 2:
-                    action = "HANDOVER_Z_DOWN"
-                    z_delta = -0.05
-                    self._speak("Please face the camera directly.")
-                else:
-                    action = "HANDOVER_VOICE_HAND_ONLY"
-                    z_delta = 0.0
-                    self._speak("Face verification unavailable. Proceeding with voice and hand confirmation only.")
-
-            if action == "HANDOVER_VOICE_HAND_ONLY":
-                self._face_skipped = True
-                self._log_event("FACE_VERIFY_SKIPPED", tool=tool,
-                                description="Face unavailable — proceeding on voice+hand")
-                break
-            elif action == "HANDOVER_Z_UP":
-                current_z += abs(z_delta) if z_delta != 0.0 else 0.05
-                self._send_arm_move(
-                    (handover_pose[0], handover_pose[1], current_z),
-                    velocity_scale=self._velocity_scale() * 0.3,
-                )
-            elif action == "HANDOVER_Z_DOWN":
-                current_z -= abs(z_delta) if z_delta != 0.0 else 0.05
-                self._send_arm_move(
-                    (handover_pose[0], handover_pose[1], current_z),
-                    velocity_scale=self._velocity_scale() * 0.3,
-                )
-
-        if (time.monotonic() - handover_start) > HANDOVER_TIMEOUT_S:
-            return False
-
-        # --- SUBSTATE 2: HAND_DETECT + DYNAMIC PALM TRACKING ---
-        self._speak("Please place your open palm under the gripper.")
-        hand_ok = self._wait_for_hand_detect_with_tracking(
-            current_arm_pos=(handover_pose[0], handover_pose[1], current_z),
-            timeout=10.0,
-        )
-        if not hand_ok:
-            self._speak("Please open your palm and hold it steady.")
-            hand_ok = self._wait_for_hand_detect_with_tracking(
-                current_arm_pos=(handover_pose[0], handover_pose[1], current_z),
-                timeout=8.0,
-            )
-        if not hand_ok:
-            return False
-
-        # --- SUBSTATE 3: VOICE_CONFIRM ---
-        self._speak("Say take to receive.")
-        if not self._wait_for_voice_confirm(user_id, timeout=5.0):
-            self._speak("Say take to receive.")
-            if not self._wait_for_voice_confirm(user_id, timeout=5.0):
-                return False
-
-        # --- RELEASE GATE ---
-        if not self._validate_release():
-            self._speak("Handover verification failed. Returning tool to tray.")
-            return False
-
-        if self._face_skipped:
-            self._log_event("FACE_VERIFY_SKIPPED", tool=tool,
-                            description=f"Handover to {user_id} without face verification")
-
-        # Learn height preference for next session
-        if self._handover_height_adjustment != 0.0:
-            cmd = "higher" if self._handover_height_adjustment > 0 else "lower"
-            self.agentic.learn_height_adjustment(user_id, cmd)
-
-        self._send_gripper_release()
-        self.world.arm_holding = False
-        return True
-
-    def _wait_for_hand_detect_with_tracking(
-        self,
-        current_arm_pos: tuple[float, float, float],
-        timeout: float,
-    ) -> bool:
-        """
-        Spec Section VII: Dynamic palm tracking.
-        Waits for hand detection AND incrementally approaches the palm center
-        using real-time /hand_status (x,y,z). Each position update validated
-        by workspace bounds. Velocity: PALM_APPROACH_VELOCITY (very slow).
-
-        The arm makes small incremental moves toward the detected palm,
-        updating its target as the hand position changes. This handles
-        the case where the user's hand isn't perfectly aligned with the
-        fixed handover zone.
-        """
-        deadline = time.monotonic() + timeout
-        last_move_target = current_arm_pos
-        last_move_time = 0.0
-
-        while time.monotonic() < deadline:
-            hs = self._latest_hand_status
-            if hs is None:
-                time.sleep(0.1)
-                continue
-
-            if hs.hand_detected and hs.is_open and hs.palm_up:
-                # Hand is ready — check if we should approach closer
-                palm_pos = (hs.x, hs.y, hs.z)
-
-                # Only move if palm position is valid (non-zero) and within workspace
-                if palm_pos[0] != 0.0 or palm_pos[1] != 0.0 or palm_pos[2] != 0.0:
-                    # Check if palm moved enough to warrant a new arm move
-                    delta = sum((a - b) ** 2 for a, b in zip(palm_pos, last_move_target)) ** 0.5
-                    now = time.monotonic()
-
-                    if delta > PALM_TRACKING_MIN_DELTA_M and (now - last_move_time) > 0.5:
-                        # Validate target is within the real workspace (from config)
-                        w = self._workspace
-                        x, y, z = palm_pos
-                        if (w['xmin'] <= x <= w['xmax'] and
-                            w['ymin'] <= y <= w['ymax'] and
-                            w['zmin'] <= z <= w['zmax']):
-                            # Move arm toward palm (non-blocking, slow)
-                            self._send_arm_move(palm_pos, velocity_scale=PALM_APPROACH_VELOCITY)
-                            last_move_target = palm_pos
-                            last_move_time = now
-
-                return True  # Hand detected, open, palm up — success
-
-            # Hand detected but not ready (closed or not palm-up)
-            if hs.hand_detected and not hs.is_open:
-                pass  # Wait — user is positioning
-
-            time.sleep(0.1)
-
-        return False
-
-    def _validate_release(self) -> bool:
-        """
-        Spec Section VII (SafetyKernel.validate_release):
-        Hand detected AND voice confirmed are BOTH required.
-        Face is ALWAYS advisory — if face_verified is False but hand+voice pass,
-        proceed and log FACE_SKIPPED. Do NOT block on face failure alone.
-        """
-        hand_ok = (
-            self._latest_hand_status is not None
-            and self._latest_hand_status.hand_detected
-            and self._latest_hand_status.is_open
-            and self._latest_hand_status.palm_up
-        )
-        voice_ok = bool(self._voice_confirm_word)
-        # Hard requirement: both hand and voice must pass
-        if not hand_ok or not voice_ok:
-            return False
-        # Face is advisory — log skip but do not block
-        if not self._face_verified and not self._face_skipped:
-            self.get_logger().warn("validate_release: face not verified — proceeding on hand+voice (FACE_SKIPPED logged)")
-            self._face_skipped = True   # ensure it gets logged
-        return True
-
-    def _wait_for_face_verify(self, user_id: str, timeout: float) -> bool:
-        if self._face_skipped:
-            return True
-        return self._auth_face_event.wait(timeout=timeout)
-
-    def _wait_for_hand_detect(self, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            hs = self._latest_hand_status
-            if hs and hs.hand_detected and hs.is_open and hs.palm_up:
-                return True
-            time.sleep(0.1)
-        return False
-
-    def _wait_for_voice_confirm(self, user_id: str, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._voice_confirm_word in {"take", "yes", "got it", "ok", "okay"}:
-                return True
-            time.sleep(0.05)
-        return False
-
-    def _send_arm_move(self, position: tuple[float, float, float], velocity_scale: float = 1.0, rotation_offset_deg: float = 0.0, allow_during_estop: bool = False) -> bool:
-        # Refuse any motion while ESTOP is active (defense in depth — the
-        # embedded interface also guards this, but stop here too).
-        # Exception: safe-deposit needs to move to set the tool down safely.
-        if self._estop_active.is_set() and not allow_during_estop:
-            return False
-        validated = ArmMoveCommand(
-            x=float(position[0]),
-            y=float(position[1]),
-            z=float(position[2]),
-            velocity_scale=float(min(max(0.1, velocity_scale), self.safe_limits.max_command_velocity_scale)),
-            rotation_offset_deg=float(rotation_offset_deg),
-        )
-        self._current_named_pose = ""
-        self.context.motion_start = time.monotonic()
-
-        # IK with reachability check. If the target is outside the arm's
-        # reachable envelope (or violates a joint limit), do NOT send a
-        # clamped/wrong pose — fail early so the planner can recover.
-        ik_result = self.ik.solve_with_status((validated.x, validated.y, validated.z))
+        
+    def _send_arm_move(self, x: float, y: float, z: float) -> bool:
+        ik_result = self.ik.solve_with_status((x, y, z))
         if not ik_result.reachable:
-            self.get_logger().warn(
-                f"IK unreachable for ({validated.x:.3f}, {validated.y:.3f}, "
-                f"{validated.z:.3f}): {ik_result.reason}"
-            )
             return False
-        q = ik_result.joint_angles
-
-        cmd = ArmCommand()
-        cmd.command = "MOVE"
-        cmd.joint_angles = [float(v) for v in q]
-        cmd.velocity_scale = validated.velocity_scale
-        cmd.accel_limit = self.safe_limits.max_command_accel_limit
-        cmd.blocking = True
-        self._motion_event.clear()
+            
+        cmd = ArmCommand(
+            command="MOVE",
+            joint_angles=[float(v) for v in ik_result.joint_angles],
+            velocity_scale=0.5,
+            accel_limit=0.25,
+            blocking=True
+        )
         self.arm_pub.publish(cmd)
-        if not self._motion_event.wait(timeout=15.0):
-            return False
-        return self._motion_success
-
-    def _send_gripper_open(self) -> bool:
-        validated = GripperCommandSchema(command="RELEASE", force_target=0.0)
-        cmd = GripperCommand()
-        cmd.command = validated.command.value
-        cmd.force_target = validated.force_target
-        self.gripper_pub.publish(cmd)
-        time.sleep(0.6)
-        self.world.arm_holding = False
         return True
 
-    def _send_gripper_grasp(self, force_target: float) -> bool:
-        validated = GripperCommandSchema(
-            command="GRASP",
-            force_target=min(float(force_target), self.safe_limits.gripper_force_soft_n),
-        )
-        cmd = GripperCommand()
-        cmd.command = validated.command.value
-        cmd.force_target = validated.force_target
+    def _send_gripper_command(self, cmd_type: str, force: float = 0.0):
+        cmd = GripperCommand(command=cmd_type, force_target=force)
         self.gripper_pub.publish(cmd)
-        return True
-
-    def _send_gripper_release(self) -> bool:
-        validated = GripperCommandSchema(command="RELEASE", force_target=0.0)
-        cmd = GripperCommand()
-        cmd.command = validated.command.value
-        cmd.force_target = validated.force_target
-        self.gripper_pub.publish(cmd)
-        time.sleep(0.6)
-        return True
-
-    def _safe_deposit(self, tool: str = ""):
-        validated = SafeDepositCommand(tool=tool)
-        # allow_during_estop: a safe deposit is the correct response to ESTOP
-        # while holding a tool — gently set it down rather than freeze mid-air.
-        self._send_arm_move(self._safe_drop_zone, velocity_scale=0.3, allow_during_estop=True)
-        self._send_gripper_release()
-        self.world.arm_holding = False
-        self._transition_state("STANDBY", f"safe_deposit_{validated.tool or self.context.tool}")
-        self._log_event("SAFE_DEPOSIT", tool=validated.tool, description="Returned tool to tray")
-
-    def _handle_estop(self, reason: str):
-        # Signal any running task thread to abort between phases.
-        self._estop_active.set()
-        # Unblock any in-flight wait() calls so the task thread wakes promptly.
-        self._vision_event.set()
-        self._motion_event.set()
-        # Transition to ESTOP first so the system is unambiguously in ESTOP.
-        self._transition_state("ESTOP", f"estop_{reason}")
-        # Then safely set down a held tool (move allowed during estop, but
-        # do NOT transition state — we must remain in ESTOP until resume).
-        if self.world.arm_holding:
-            self._send_arm_move(self._safe_drop_zone, velocity_scale=0.3, allow_during_estop=True)
-            self._send_gripper_release()
-            self.world.arm_holding = False
-            self._log_event("SAFE_DEPOSIT", tool=self.context.tool,
-                            description="ESTOP — tool set down, holding in ESTOP")
-
-    def _abort_task(self, message: str):
-        validated = AbortCommand(message=message)
-        self._speak(validated.message)
-        self._log_event("TASK_ABORTED", description=validated.message)
-        self._transition_state("STANDBY", "task_aborted")
-
-    def _log_success(self):
-        self._log_event(
-            "TASK_COMPLETE",
-            description=(
-                f"vision_retries={self.context.vision_retries} "
-                f"grasp_retries={self.context.grasp_retries} "
-                f"face_retries={self.context.face_retries}"
-            ),
-        )
-
-    def _velocity_scale(self) -> float:
-        if self.world.safety_severity == "CRITICAL":
-            return 0.5
-        if self.world.safety_severity == "WARNING":
-            return 0.75
-        return 1.0
-
-    def destroy_node(self):
-        self._cancel_presentation_timer()
-        super().destroy_node()
-
+        
+    def _request_auth_face(self):
+        req = AuthRequest(modality="face", timeout_s=10.0)
+        self.auth_req_pub.publish(req)
+        
+    def _publish_vision_penalty(self):
+        self.vision_penalty_pub.publish(String(data=self.context.tool))
 
 def main(args=None):
     rclpy.init(args=args)

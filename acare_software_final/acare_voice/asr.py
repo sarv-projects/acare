@@ -245,9 +245,10 @@ class ASRClient:
                 self._reconnect_in_background()
         else:
             print(f"[ASR] Deepgram error: {error}")
-            if not self._connection_died:
-                self._connection_died = True
-                self._reconnect_in_background()
+            if isinstance(error, dict) and "ConnectionClosed" in str(error.get("description", "")):
+                if not self._connection_died:
+                    self._connection_died = True
+                    self._reconnect_in_background()
 
     def send_chunk(self, audio_np):
         audio_int16 = (audio_np * 32767).astype(np.int16)
@@ -260,16 +261,7 @@ class ASRClient:
                 print(f"[ASR] Audio not reachable; connection may have timed out")
                 self._last_send_error_time = now
 
-    def send_audio(self, audio_np):
-        audio_int16 = (audio_np * 32767).astype(np.int16)
-        raw_bytes = audio_int16.tobytes()
-        if self._send_to_deepgram_safe(raw_bytes):
-            self._last_send_error_time = 0
-        else:
-            now = time.time()
-            if not self._connection_died and (now - self._last_send_error_time > 10.0):
-                print(f"[ASR] Audio not reachable; connection may have timed out")
-                self._last_send_error_time = now
+    send_audio = send_chunk
 
     def disconnect(self):
         self.stop_keepalive()

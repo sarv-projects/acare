@@ -86,7 +86,7 @@ class ConversationEvaluator:
     def test_slow_pickup(self) -> TestResult:
         start = time.time()
 
-        self.node._on_transcript("bring me the scalpel")
+        self.node._on_transcript("bring me the scissors")
 
         max_wait = 3.0
         responded = False

@@ -62,6 +62,15 @@ STATE_QOS = QoSProfile(
     depth=1,
 )
 
+# For /emergency_stop — late-joining nodes MUST see active ESTOP state.
+# TRANSIENT_LOCAL ensures they receive the last ESTOP signal on subscribe.
+ESTOP_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+
 # ---------------------------------------------------------------------------
 # Convenience aliases matching spec names
 # ---------------------------------------------------------------------------
@@ -69,8 +78,11 @@ STATE_QOS = QoSProfile(
 # /motion_feedback, /lidar_scan
 TOPIC_SENSOR         = SENSOR_QOS_DEPTH1
 
-# /arm_command, /gripper_command, /emergency_stop
+# /arm_command, /gripper_command
 TOPIC_COMMAND        = RELIABLE_QOS
+
+# /emergency_stop (TRANSIENT_LOCAL for late-joining nodes)
+TOPIC_ESTOP          = ESTOP_QOS
 
 # /robot_state, /state_transition, /safety_alert
 TOPIC_STATE          = STATE_QOS

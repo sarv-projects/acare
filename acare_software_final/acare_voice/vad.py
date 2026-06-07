@@ -22,6 +22,7 @@ class VADListener:
         self.is_listening = False
         self.callback = None
         self.streaming_paused = False
+        self._flushing = False
 
     def process_chunk(self, chunk):
         audio_tensor = np.array(chunk, dtype=np.float32)
@@ -56,10 +57,16 @@ class VADListener:
                     self._reset()
 
     def _flush(self):
-        if self.speech_buffer and self.callback:
-            audio = np.concatenate(self.speech_buffer)
-            self.callback(audio)
-        self._reset()
+        if self._flushing:
+            return
+        self._flushing = True
+        try:
+            if self.speech_buffer and self.callback:
+                audio = np.concatenate(self.speech_buffer)
+                self.callback(audio)
+        finally:
+            self._reset()
+            self._flushing = False
 
     def _reset(self):
         self.speech_buffer = []

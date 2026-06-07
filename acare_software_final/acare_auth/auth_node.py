@@ -13,6 +13,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 from acare_bringup.paths import SYSTEM_YAML
+from acare_bringup.qos_profiles import TOPIC_VOICE_PIPELINE, TOPIC_TTS, TOPIC_STATE, TOPIC_SENSOR
 from acare_msgs.msg import AuthRequest, AuthResult, Intent, RobotState, StateTransition, Transcript, ValidatedIntent
 from acare_msgs.srv import EnrolStaff
 
@@ -64,19 +65,19 @@ class AuthNode(Node):
     def __init__(self):
         super().__init__("auth_node")
         self._io_group = ReentrantCallbackGroup()
-        self.validated_pub = self.create_publisher(ValidatedIntent, "/validated_intent", 10)
-        self.auth_pub = self.create_publisher(AuthResult, "/auth_result", 10)
-        self.tts_pub = self.create_publisher(String, "/tts_request", 10)
-        self.transition_pub = self.create_publisher(StateTransition, "/state_transition", 10)
-        self.create_subscription(Intent, "/intent_result", self._on_intent, 10, callback_group=self._io_group)
-        self.create_subscription(AuthRequest, "/auth_request", self._on_auth_request, 10, callback_group=self._io_group)
-        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, 10, callback_group=self._io_group)
-        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, 10, callback_group=self._io_group)
+        self.validated_pub = self.create_publisher(ValidatedIntent, "/validated_intent", TOPIC_VOICE_PIPELINE)
+        self.auth_pub = self.create_publisher(AuthResult, "/auth_result", TOPIC_VOICE_PIPELINE)
+        self.tts_pub = self.create_publisher(String, "/tts_request", TOPIC_TTS)
+        self.transition_pub = self.create_publisher(StateTransition, "/state_transition", TOPIC_STATE)
+        self.create_subscription(Intent, "/intent_result", self._on_intent, TOPIC_VOICE_PIPELINE, callback_group=self._io_group)
+        self.create_subscription(AuthRequest, "/auth_request", self._on_auth_request, TOPIC_VOICE_PIPELINE, callback_group=self._io_group)
+        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, TOPIC_VOICE_PIPELINE, callback_group=self._io_group)
+        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE, callback_group=self._io_group)
         self.create_subscription(
             Image,
             "/ascamera_hp60c/camera_publisher/rgb0/image",
             self._on_rgb,
-            10,
+            TOPIC_SENSOR,
             callback_group=self._io_group,
         )
         # Gazebo bridge publishes RGB as /camera/rgb — accept both so the same
@@ -85,7 +86,7 @@ class AuthNode(Node):
             Image,
             "/camera/rgb",
             self._on_rgb,
-            10,
+            TOPIC_SENSOR,
             callback_group=self._io_group,
         )
         self.create_service(EnrolStaff, "/enrol_staff", self._on_enrol, callback_group=self._io_group)
@@ -126,6 +127,9 @@ class AuthNode(Node):
 
         self.create_timer(0.5, self._passive_face_scan)
         self.create_timer(0.5, self._handover_face_check)
+        self.create_timer(10.0, self._session_timeout_check)
+        self._last_activity_at = time.monotonic()
+        self._session_timeout_s = 300.0
         self.get_logger().info(
             f"Auth node ready demo_mode={self._demo_mode} "
             f"face_backend={self.face_verifier.available} voice_backend={self.voice_verifier.available}"
@@ -226,12 +230,15 @@ class AuthNode(Node):
             best = users[-1]
             return best, 0.99
 
+        import cv2
+        bgr_frame = cv2.cvtColor(self._latest_rgb, cv2.COLOR_RGB2BGR)
+
         best_user = None
         best_sim = 0.0
         for user in users:
             if user.face_emb is None:
                 continue
-            matched, sim = self.face_verifier.verify(self._latest_rgb, user.face_emb)
+            matched, sim = self.face_verifier.verify(bgr_frame, user.face_emb)
             if sim > best_sim:
                 best_sim = sim
                 best_user = user
@@ -308,9 +315,11 @@ class AuthNode(Node):
             self._publish_auth(True, user.user_id, user.name, user.role, True, 0.99, 0.99)
             return
 
-        matched, sim = self.face_verifier.verify(self._latest_rgb, user.face_emb)
+        import cv2
+        bgr_frame = cv2.cvtColor(self._latest_rgb, cv2.COLOR_RGB2BGR)
+        matched, sim = self.face_verifier.verify(bgr_frame, user.face_emb)
         self._last_face_similarity = sim
-        self._publish_auth(True, user.user_id, user.name, user.role, matched, sim, 0.99)
+        self._publish_auth(matched, user.user_id, user.name, user.role, matched, sim, 0.99)
 
     def _runtime_voice_check(self):
         if not self._active_user_id:
@@ -323,14 +332,30 @@ class AuthNode(Node):
             self._awaiting_reconfirm = True
             self._publish_tts("Having trouble recognising your voice. Please re-confirm identity.")
 
+    def _session_timeout_check(self):
+        if not self._active_user_id:
+            return
+        if self._robot_state in {"ESTOP", "HOLDING", "HANDOVER"}:
+            self._last_activity_at = time.monotonic()
+            return
+        elapsed = time.monotonic() - self._last_activity_at
+        if elapsed > self._session_timeout_s:
+            self.get_logger().info(
+                f"Session timeout after {elapsed:.0f}s of inactivity for {self._active_user_name}"
+            )
+            self._publish_tts("Session timed out due to inactivity. Please log in again.")
+            self._logout()
+
     def _transcript_to_audio_tensor(self, msg: Transcript):
-        if not msg.pcm16 or int(msg.sample_rate_hz) != 16000:
+        if msg.pcm16 is None or int(msg.sample_rate_hz) != 16000:
             return None
         try:
             import torch
-
-            audio_np = np.asarray(msg.pcm16, dtype=np.int16).astype(np.float32) / 32767.0
-            if audio_np.size == 0 or not np.isfinite(audio_np).all():
+            arr = np.asarray(msg.pcm16, dtype=np.int16)
+            if arr.size == 0:
+                return None
+            audio_np = arr.astype(np.float32) / 32767.0
+            if not np.isfinite(audio_np).all():
                 return None
             return torch.from_numpy(audio_np)
         except Exception:
@@ -415,6 +440,9 @@ class AuthNode(Node):
         if not self.face_verifier.available:
             return
 
+        import cv2
+        bgr_frame = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
         now = time.monotonic()
         with self._enrol_condition:
             pending = self._pending_enrolment
@@ -426,7 +454,7 @@ class AuthNode(Node):
                 return
             pending.last_face_capture_at = now
 
-        face_emb = self.face_verifier.embed(arr)
+        face_emb = self.face_verifier.embed(bgr_frame)
         if face_emb is None:
             return
 
@@ -508,79 +536,72 @@ class AuthNode(Node):
             f"voice_target={voice_target} face_target={face_target}"
         )
 
-        try:
-            while True:
+        def _background_enrol():
+            try:
+                while True:
+                    with self._enrol_condition:
+                        current = self._pending_enrolment
+                        if current is None:
+                            break
+                        if current.cancelled:
+                            return
+                        if current.failure_reason:
+                            return
+                        face_done = len(current.face_embeddings) >= face_target
+                        voice_done = len(current.voice_embeddings) >= voice_target
+                        if face_done and voice_done:
+                            break
+                        remaining = current.deadline_at - time.monotonic()
+                        if remaining <= 0.0:
+                            break
+                        self._enrol_condition.wait(timeout=min(0.5, remaining))
+
                 with self._enrol_condition:
                     current = self._pending_enrolment
-                    if current is None:
-                        break
-                    if current.cancelled:
-                        response.success = False
-                        response.staff_id = ""
-                        response.message = current.failure_reason or "Enrolment cancelled."
-                        return response
-                    if current.failure_reason:
-                        response.success = False
-                        response.staff_id = ""
-                        response.message = current.failure_reason
-                        return response
-                    face_done = len(current.face_embeddings) >= face_target
-                    voice_done = len(current.voice_embeddings) >= voice_target
-                    if face_done and voice_done:
-                        break
-                    remaining = current.deadline_at - time.monotonic()
-                    if remaining <= 0.0:
-                        break
-                    self._enrol_condition.wait(timeout=min(0.5, remaining))
-
-            with self._enrol_condition:
-                current = self._pending_enrolment
-                self._pending_enrolment = None
-
-            face_count = len(pending.face_embeddings)
-            voice_count = len(pending.voice_embeddings)
-            if face_count < face_target or voice_count < voice_target:
-                missing = []
-                if face_count < face_target:
-                    missing.append(f"face frames {face_count}/{face_target}")
-                if voice_count < voice_target:
-                    missing.append(f"voice samples {voice_count}/{voice_target}")
-                response.success = False
-                response.staff_id = ""
-                response.message = "Enrolment timed out before capturing required biometrics: " + ", ".join(missing)
-                self.get_logger().warn(response.message)
-                return response
-
-            face_emb = self._normalise_embedding_mean(pending.face_embeddings) if face_target else None
-            voice_emb = self._normalise_embedding_mean(pending.voice_embeddings) if voice_target else None
-            if (face_target and face_emb is None) or (voice_target and voice_emb is None):
-                response.success = False
-                response.staff_id = ""
-                response.message = "Enrolment failed because biometric embeddings could not be aggregated."
-                return response
-
-            record = self.store.enrol(name, role, voice_emb=voice_emb, face_emb=face_emb)
-            response.success = True
-            response.staff_id = record.user_id
-            response.message = (
-                f"Enrolment stored for {name} with "
-                f"{voice_count} voice samples and {face_count} face frames."
-            )
-            if self._demo_mode and (voice_target == 0 or face_target == 0):
-                response.message += " Demo mode stored a degraded biometric profile."
-            self.get_logger().info(f"Enrolment completed for {record.user_id}")
-            return response
-        finally:
-            with self._enrol_condition:
-                if self._pending_enrolment is pending:
                     self._pending_enrolment = None
 
+                face_count = len(pending.face_embeddings)
+                voice_count = len(pending.voice_embeddings)
+                if face_count < face_target or voice_count < voice_target:
+                    msg = "Enrolment timed out before capturing required biometrics. Please try again."
+                    self.get_logger().warn(msg)
+                    self._publish_tts(msg)
+                    return
+
+                face_emb = self._normalise_embedding_mean(pending.face_embeddings) if face_target else None
+                voice_emb = self._normalise_embedding_mean(pending.voice_embeddings) if voice_target else None
+                if (face_target and face_emb is None) or (voice_target and voice_emb is None):
+                    msg = "Failed to process enrolment biometrics. Please try again."
+                    self.get_logger().warn(msg)
+                    self._publish_tts(msg)
+                    return
+
+                record = self.store.enrol(name, role, voice_emb=voice_emb, face_emb=face_emb)
+                self.get_logger().info(f"Enrolment completed for {record.user_id} in background.")
+            finally:
+                with self._enrol_condition:
+                    if self._pending_enrolment is pending:
+                        self._pending_enrolment = None
+
+        threading.Thread(target=_background_enrol, daemon=True).start()
+        
+        response.success = True
+        response.staff_id = ""
+        response.message = f"Enrolment started for {name}. Please follow voice prompts."
+        return response
+
     def _on_intent(self, msg: Intent):
+        if self._robot_state == "ESTOP":
+            self.get_logger().warn("Ignoring intent because robot is in ESTOP.")
+            return
         if self._pending_enrolment is not None:
             self.get_logger().warn("Ignoring intent while enrolment is in progress.")
             return
         action = (msg.action or "").lower()
         if action == "logout":
+            if self._robot_state in {"HOLDING", "HANDOVER"}:
+                self._publish_tts("Cannot log out while holding a tool.")
+                return
             self._logout()
             return
         if action != "fetch":
@@ -596,7 +617,6 @@ class AuthNode(Node):
             ):
                 self._runtime_voice_check()
                 self._publish_tts(f"Command not processed. Only {self._active_user_name} can issue commands.")
-                self._pending_intent = None
                 return
             self._runtime_voice_check()
             self._resolve_pending_intent()
@@ -608,6 +628,9 @@ class AuthNode(Node):
             self._pending_intent = PendingIntent(tool=msg.tool, action="fetch", confidence=msg.confidence)
 
     def _on_transcript(self, msg: Transcript):
+        if self._robot_state == "ESTOP":
+            return
+        self._last_activity_at = time.monotonic()
         text = (msg.text or "").strip().lower()
         if self._pending_enrolment is not None:
             if text in {"cancel", "abort", "stop enrolment", "stop enrollment"}:
@@ -645,8 +668,11 @@ class AuthNode(Node):
                     self._maybe_prompt("Please say confirm again.", cooldown_s=1.0)
                     return
                 elif audio_tensor is not None:
-                    if self._bootstrap_voice_embedding(pending.user_id, msg):
-                        voice_conf = 0.85
+                    self._pending_login = pending
+                    self._publish_tts(
+                        "Voice template not enrolled. Please contact admin to complete voice enrolment."
+                    )
+                    return
             self._pending_login = None
             self._activate_session(pending.user_id, pending.name, pending.role)
             self._publish_auth(
@@ -664,9 +690,13 @@ class AuthNode(Node):
             return
 
         if self._awaiting_reconfirm and text in {"confirm", "yes"} and self._active_user_id:
+            if not self._last_voice_check_ok:
+                self._publish_tts("Voice verification failed. Please try again.")
+                return
             self._awaiting_reconfirm = False
             self._voice_drift_failures = 0
             self._publish_tts("Identity reconfirmed.")
+            self._resolve_pending_intent()
             return
 
         if self._robot_state == "HANDOVER" and self._active_user_id:

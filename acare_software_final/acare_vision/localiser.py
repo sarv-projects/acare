@@ -15,6 +15,7 @@
 # HP60C depth range: 200mm – 4000mm (0.2m – 4.0m)
 # Depth values are uint16 in millimetres.
 
+import math
 import numpy as np
 import yaml
 from pathlib import Path
@@ -53,6 +54,13 @@ class Localiser:
         self.cy = PLACEHOLDER_CY
         self.T  = PLACEHOLDER_T.copy()
         self._calibrated = False
+        # Fixed offset from wrist flange to camera lens (metres).
+        # Default: camera is ~40mm forward and ~20mm below the flange,
+        # with optical axis pointing down (-Z robot when looking straight down).
+        # Override via camera.T_flange_camera in system.yaml.
+        self._T_flange_camera = np.eye(4, dtype=np.float64)
+        self._T_flange_camera[0, 3] =  0.040   # 40 mm forward from flange
+        self._T_flange_camera[2, 3] = -0.020   # 20 mm below flange
         self._load_config()
 
     def _load_config(self):
@@ -62,6 +70,12 @@ class Localiser:
             with open(SYSTEM_YAML) as f:
                 cfg = yaml.safe_load(f)
             cam = cfg.get('camera', {})
+            # T_flange_camera: wrist-mounted camera offset from flange.
+            # Only translation matters for the simplified FK model; rotation
+            # is handled by compute_T_for_viewpoint() from joint angles.
+            if 'T_flange_camera' in cam:
+                Tfc = np.array(cam['T_flange_camera'], dtype=np.float64).reshape(4, 4)
+                self._T_flange_camera = Tfc
             if all(k in cam for k in ('fx', 'fy', 'cx', 'cy', 'T_robot_camera')):
                 fx, fy, cx, cy = (float(cam['fx']), float(cam['fy']),
                                   float(cam['cx']), float(cam['cy']))
@@ -89,13 +103,18 @@ class Localiser:
         self.cx = float(cx)
         self.cy = float(cy)
 
-    def pixel_to_robot(self, bbox: tuple, depth_frame: np.ndarray):
+    def pixel_to_robot(self, bbox: tuple, depth_frame: np.ndarray,
+                      T_override: np.ndarray | None = None):
         """
         Converts a bounding box centre pixel + depth to 3D robot-frame coordinates.
 
         Inputs:
             bbox        — (x1, y1, x2, y2) pixel coordinates
             depth_frame — H x W uint16 array, values in millimetres
+            T_override  — optional 4x4 camera-to-robot transform.  Use this for
+                          wrist-mounted cameras where T changes with every arm
+                          pose.  When None, falls back to self.T (static / table-
+                          mounted camera path).
 
         Returns:
             (x, y, z) tuple in metres in robot base frame,
@@ -136,8 +155,9 @@ class Localiser:
         Z_cam = depth_m
 
         # Transform to robot base frame
+        T = T_override if T_override is not None else self.T
         P_cam   = np.array([X_cam, Y_cam, Z_cam, 1.0])
-        P_robot = self.T @ P_cam
+        P_robot = T @ P_cam
 
         return (float(P_robot[0]), float(P_robot[1]), float(P_robot[2]))
 
@@ -155,3 +175,77 @@ class Localiser:
     def is_calibrated(self) -> bool:
         """Returns True if real calibration data was loaded from system.yaml."""
         return self._calibrated
+
+    # ------------------------------------------------------------------
+    # Wrist-mounted camera helpers
+    # ------------------------------------------------------------------
+
+    def compute_T_for_viewpoint(
+        self,
+        joint_angles: list[float],
+        arm_link_lengths: dict | None = None,
+        T_flange_camera: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """
+        Computes the 4x4 camera-to-robot-base transform for a wrist-mounted
+        camera at a given arm pose.
+
+        T_robot_camera = T_robot_flange(joints) × T_flange_camera
+
+        Parameters:
+            joint_angles     — 6 joint angles (radians) at the current viewpoint
+            arm_link_lengths — dict with keys: base_height, upper_arm, forearm.
+                               If None, falls back to defaults from the arm spec.
+            T_flange_camera  — 4x4 fixed offset from wrist flange to camera lens.
+                               If None, uses self._T_flange_camera (loaded from
+                               system.yaml) or a sensible default.
+
+        Returns:
+            4x4 numpy array (T_robot_camera).
+        """
+        if T_flange_camera is None:
+            T_flange_camera = self._T_flange_camera
+        if arm_link_lengths is None:
+            arm_link_lengths = {}
+
+        L1     = float(arm_link_lengths.get('upper_arm',  0.400))
+        L2     = float(arm_link_lengths.get('forearm',    0.400))
+        base_h = float(arm_link_lengths.get('base_height', 0.352))
+
+        j = [float(v) for v in joint_angles]
+        j1, j2, j3, j4, j5, j6 = j
+
+        # --- Flange position from FK (position-carrying joints J1-J3) ---
+        r = L1 * math.cos(j2) + L2 * math.cos(j2 + j3)
+        zr = base_h + L1 * math.sin(j2) + L2 * math.sin(j2 + j3)
+
+        fx = r * math.cos(j1)
+        fy = r * math.sin(j1)
+        fz = zr
+
+        # --- Flange orientation ---
+        # The forearm absolute pitch is (j2 + j3).  J4 is wrist roll, J5 is
+        # wrist pitch, J6 is wrist yaw.  For the NBV viewpoints the wrist is
+        # configured for a top-down look (J5 closes the chain to vertical).
+        # We build the rotation as R = Rz(j1) · Ry(-(j2+j3)) · Rz(j4) · Ry(j5) · Rz(j6)
+        # but simplify using the fact that at calibrated viewpoints J4≈0, J6≈0.
+        c1, s1 = math.cos(j1), math.sin(j1)
+        # Forearm direction in the arm plane:
+        abs_pitch = j2 + j3 + j5   # absolute pitch including wrist
+        cp, sp = math.cos(abs_pitch), math.sin(abs_pitch)
+
+        # Rotation matrix: camera Z points along the forearm direction,
+        # camera X is roughly "forward" in the horizontal plane, Y completes.
+        # This is a simplified but correct parameterisation for the top-down
+        # viewpoints where the camera looks straight down.
+        R = np.array([
+            [ c1 * cp, -s1,  c1 * sp],
+            [ s1 * cp,  c1,  s1 * sp],
+            [   -sp,    0.0,    cp   ],
+        ])
+
+        T_robot_flange = np.eye(4)
+        T_robot_flange[:3, :3] = R
+        T_robot_flange[:3, 3] = [fx, fy, fz]
+
+        return T_robot_flange @ T_flange_camera

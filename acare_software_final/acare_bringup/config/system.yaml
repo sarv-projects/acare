@@ -1,4 +1,6 @@
 robot:
+  face_verify_z: 0.70
+  presentation_z: 0.45
   workspace:
     # Reachable envelope based on confirmed link lengths (400+400mm arm,
     # 236mm tool drop). Comfortable tray pick range is 0.40–0.55m from base.
@@ -12,6 +14,13 @@ robot:
   handover_zone:   {x: 0.0, y: 0.40, z: 0.10}   # [FILL_AFTER_ASSEMBLY]
   handover_height_adjustment_m: 0.05
   kiosk_return_to_rest_seconds: 12
+
+interface:
+  # "sim" = Gazebo ros2_control (default), "hardware" = Teensy 4.1 over SPI
+  mode: sim
+  spi_bus: 0
+  spi_device: 0
+  spi_speed_hz: 10000000
 
 arm:
   # Gearbox ratios confirmed: Joint 2 (Shoulder) = 22:1, Joint 3 (Elbow) = 15:1
@@ -107,3 +116,16 @@ auth:
   enrol_face_frames:   10
 
 demo_mode: true
+
+planner:
+  tool_budget_per_task: 20
+  llm_timeout_s: 4.0
+  base_grasp_force_n: 3.0
+  grip_firmness:
+    LIGHT: 0.0
+    NORMAL: 1.0
+    FIRM: 2.0
+  approach_variant:
+    TOP_DOWN: 0.0
+    SIDE_LEFT: -90.0
+    SIDE_RIGHT: 90.0

@@ -3,15 +3,21 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+import re
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from acare_bringup.qos_profiles import TOPIC_VOICE_PIPELINE, TOPIC_TTS, TOPIC_STATE, TOPIC_VISION
 from acare_msgs.msg import AuthRequest, Intent, RobotState, Transcript, ValidatedIntent, VisionResult
 
 from acare_voice.assistant_agent import AssistantAgent
 from acare_voice.fast_intent import parse_fast_intent
 from acare_voice.normaliser import get_multi_tool_prompt, normalise
+
+PRONOUN_RE = re.compile(r"\b(it|that)\b", re.I)
+COMPARATIVE_RE = re.compile(r"\b(smaller|bigger)\b", re.I)
 
 
 @dataclass
@@ -27,13 +33,13 @@ class SessionMemory:
 class DialogueNode(Node):
     def __init__(self):
         super().__init__("dialogue_node")
-        self.intent_pub = self.create_publisher(Intent, "/intent_result", 10)
-        self.auth_req_pub = self.create_publisher(AuthRequest, "/auth_request", 10)
-        self.tts_pub = self.create_publisher(String, "/tts_request", 10)
-        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, 10)
-        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, 10)
-        self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, 10)
-        self.create_subscription(VisionResult, "/vision_result", self._on_vision_result, 10)
+        self.intent_pub = self.create_publisher(Intent, "/intent_result", TOPIC_VOICE_PIPELINE)
+        self.auth_req_pub = self.create_publisher(AuthRequest, "/auth_request", TOPIC_VOICE_PIPELINE)
+        self.tts_pub = self.create_publisher(String, "/tts_request", TOPIC_TTS)
+        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, TOPIC_VOICE_PIPELINE)
+        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE)
+        self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, TOPIC_VOICE_PIPELINE)
+        self.create_subscription(VisionResult, "/vision_result", self._on_vision_result, TOPIC_VISION)
         self._assistant = self._build_assistant()
         self._robot_state = "LOGGED_OUT"
         self._memory = SessionMemory()
@@ -76,6 +82,9 @@ class DialogueNode(Node):
     def _on_robot_state(self, msg: RobotState):
         self._robot_state = msg.state
         self._active_user_id = msg.active_user_id
+        if msg.state in {"LOGGED_OUT", "ESTOP", "HANDOVER"}:
+            self._memory.pending_clarification = False
+            self._memory.last_ambiguous_tools = []
         if msg.state == "LOGGED_OUT":
             self._memory = SessionMemory()
 
@@ -89,13 +98,12 @@ class DialogueNode(Node):
             self._memory.current_task = {"tool": msg.tool, "status": "vision_found"}
 
     def _resolve_pronoun(self, text: str) -> str | None:
-        lowered = text.lower()
-        if "it" in lowered or "that" in lowered:
+        if PRONOUN_RE.search(text):
             if self._memory.current_task.get("tool"):
                 return self._memory.current_task["tool"]
             if self._memory.tools_fetched:
                 return self._memory.tools_fetched[-1]["tool"]
-        if "smaller" in lowered or "bigger" in lowered:
+        if COMPARATIVE_RE.search(text):
             if self._memory.last_ambiguous_tools:
                 return self._memory.last_ambiguous_tools[0]
         return None
@@ -105,10 +113,8 @@ class DialogueNode(Node):
         self._memory.last_ambiguous_tools = tools
         if len(tools) >= 2:
             self._say(get_multi_tool_prompt(tools))
-        elif "sharp" in text:
-            self._say("Do you mean a scalpel or scissors?")
-        elif "cutting" in text:
-            self._say("Do you mean scissors or scalpel?")
+        elif "sharp" in text or "cutting" in text:
+            self._say("Which tool do you mean?")
         else:
             self._say("Which tool do you mean?")
 
@@ -129,8 +135,6 @@ class DialogueNode(Node):
 
         if self._robot_state == "LOGGED_OUT":
             self._publish_auth_request("login_candidate", transcript=text)
-            self._assistant_reply(text)
-            return
 
         fast = parse_fast_intent(text, self._memory.current_task.get("tool"))
         if fast:
@@ -139,16 +143,19 @@ class DialogueNode(Node):
                 self._clarify_ambiguous(text.lower(), tools)
                 return
             tool = fast.get("tool") or self._resolve_pronoun(text) or ""
-            self._publish_intent(tool, fast.get("action", "fetch"), fast.get("confidence", 0.95))
-            if fast.get("action") == "fetch":
-                self._publish_auth_request("validate_intent", transcript=text, tool=tool, confidence=fast.get("confidence", 0.95))
+            conf = fast.get("confidence", 0.95)
+            if fast.get("action") == "fetch" and conf < 0.8:
+                self._say(f"Fetching {tool}. Is that correct?")
+                self._memory.pending_clarification = True
+                self._memory.last_ambiguous_tools = [tool]
+                return
+            self._publish_intent(tool, fast.get("action", "fetch"), conf)
             return
 
         cleaned, multi_tool, found_tools = normalise(text)
         resolved_tool = self._resolve_pronoun(cleaned)
         if resolved_tool:
             self._publish_intent(resolved_tool, "fetch", 0.85)
-            self._publish_auth_request("validate_intent", transcript=text, tool=resolved_tool, confidence=0.85)
             return
 
         if multi_tool:
@@ -156,12 +163,13 @@ class DialogueNode(Node):
             return
 
         if any(token in cleaned for token in ("sharp", "cutting thing")):
-            self._clarify_ambiguous(cleaned, ["scalpel", "scissors"])
+            self._publish_intent("scissors", "fetch", 0.85)
             return
 
         if found_tools:
-            self._publish_intent(found_tools[0], "fetch", 0.72)
-            self._publish_auth_request("validate_intent", transcript=text, tool=found_tools[0], confidence=0.72)
+            self._say(f"Fetching {found_tools[0]}. Is that correct?")
+            self._memory.pending_clarification = True
+            self._memory.last_ambiguous_tools = [found_tools[0]]
             return
 
         if self._memory.pending_clarification and self._memory.last_ambiguous_tools:
@@ -169,7 +177,6 @@ class DialogueNode(Node):
                 if tool in cleaned:
                     self._memory.pending_clarification = False
                     self._publish_intent(tool, "fetch", 0.9)
-                    self._publish_auth_request("validate_intent", transcript=text, tool=tool, confidence=0.9)
                     return
 
         self._assistant_reply(text)

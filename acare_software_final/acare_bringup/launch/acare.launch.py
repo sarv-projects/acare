@@ -9,6 +9,7 @@ def generate_launch_description() -> LaunchDescription:
         Node(package="acare_auth", executable="auth_node", output="screen"),
         Node(package="acare_planner", executable="state_manager", output="screen"),
         Node(package="acare_planner", executable="planner_node", output="screen"),
+        # Executable name is 'interface_node' (defined in acare_embedded_interface setup.py)
         Node(package="acare_embedded_interface", executable="interface_node", output="screen"),
         Node(package="acare_vision", executable="vision_node", output="screen"),
         Node(package="acare_safety", executable="safety_node", output="screen"),

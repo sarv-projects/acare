@@ -24,7 +24,7 @@ DEFAULT_CLASS_SETS = {
 }
 
 
-class YOLOv11ONNX:
+class YOLO26ONNX:
     def __init__(self, model_path: str, conf_thresh: float = 0.70):
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 4
@@ -103,8 +103,12 @@ class YOLOv11ONNX:
     def _apply_gamma(self, bgr_frame: np.ndarray, gamma: float) -> np.ndarray:
         if gamma <= 0.0:
             return bgr_frame
-        inv_gamma = 1.0 / gamma
-        table = np.array([(i / 255.0) ** inv_gamma * 255.0 for i in range(256)], dtype=np.float32)
+        if not hasattr(self, '_gamma_cache'):
+            self._gamma_cache = {}
+        if gamma not in self._gamma_cache:
+            inv_gamma = 1.0 / gamma
+            self._gamma_cache[gamma] = np.array([(i / 255.0) ** inv_gamma * 255.0 for i in range(256)], dtype=np.float32)
+        table = self._gamma_cache[gamma]
         return cv2.LUT(bgr_frame, table.astype(np.uint8))
 
     def _apply_unsharp_mask(self, bgr_frame: np.ndarray) -> np.ndarray:
