@@ -15,12 +15,15 @@
 # HP60C depth range: 200mm – 4000mm (0.2m – 4.0m)
 # Depth values are uint16 in millimetres.
 
+import logging
 import math
 import numpy as np
 import yaml
 from pathlib import Path
 
 from acare_bringup.paths import SYSTEM_YAML
+
+logger = logging.getLogger(__name__)
 
 # Default intrinsics — real HP60C values (read from /camera_info, 2026-05-30).
 # These are overridden live by update_intrinsics() from the camera_info topic.
@@ -86,6 +89,16 @@ class Localiser:
                     T_flat = cam['T_robot_camera']
                     self.T = np.array(T_flat, dtype=np.float64).reshape(4, 4)
                     self._calibrated = True
+                    # Check if extrinsics are STILL placeholder (identity).
+                    # If so, 3D positions will be in CAMERA frame, not robot
+                    # base frame, which breaks arm-coordinated fetching.
+                    if np.allclose(self.T, np.eye(4), atol=1e-6):
+                        logger.warning(
+                            "T_robot_camera is IDENTITY (not yet calibrated). "
+                            "3D positions will be in CAMERA frame, NOT robot base "
+                            "frame — arm movements will be incorrect. "
+                            "Run 'admin.py calibrate' Step 5 to set real extrinsics."
+                        )
         except Exception:
             pass  # use placeholders
 

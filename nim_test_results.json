@@ -1,0 +1,62 @@
+[
+  {
+    "call": 1,
+    "status": "ERROR",
+    "time": 4.08703351020813,
+    "error": "Expecting value: line 18 column 17 (char 468)"
+  },
+  {
+    "call": 2,
+    "status": "ERROR",
+    "time": 4.218371391296387,
+    "error": "Unterminated string starting at: line 19 column 23 (char 518)"
+  },
+  {
+    "call": 3,
+    "status": "OK",
+    "time": 3.3431997299194336,
+    "tool": null
+  },
+  {
+    "call": 4,
+    "status": "ERROR",
+    "time": 3.7305755615234375,
+    "error": "Unterminated string starting at: line 20 column 9 (char 454)"
+  },
+  {
+    "call": 5,
+    "status": "ERROR",
+    "time": 3.8096678256988525,
+    "error": "Unterminated string starting at: line 18 column 7 (char 419)"
+  },
+  {
+    "call": 6,
+    "status": "ERROR",
+    "time": 3.3825018405914307,
+    "error": "Expecting property name enclosed in double quotes: line 20 column 1 (char 422)"
+  },
+  {
+    "call": 7,
+    "status": "ERROR",
+    "time": 3.697451114654541,
+    "error": "Unterminated string starting at: line 17 column 17 (char 417)"
+  },
+  {
+    "call": 8,
+    "status": "ERROR",
+    "time": 3.6335954666137695,
+    "error": "Expecting property name enclosed in double quotes: line 23 column 1 (char 427)"
+  },
+  {
+    "call": 9,
+    "status": "OK",
+    "time": 2.7738542556762695,
+    "tool": null
+  },
+  {
+    "call": 10,
+    "status": "ERROR",
+    "time": 3.7394282817840576,
+    "error": "Expecting ',' delimiter: line 21 column 1 (char 447)"
+  }
+]

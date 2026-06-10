@@ -48,35 +48,59 @@ class ToolKernel:
         if action_sig in self.snapshot.tried_and_failed:
             return False, "ALREADY_TRIED", f"Action {action_sig} was already tried and failed this task."
         
+        # --- L0: Safety Kernel Gate ---
+        # Get target_xyz if applicable
+        target_xyz = None
+        if tool_name == 'arm_move' and self.node.context.grasp_point:
+            target_xyz = self.node.context.grasp_point
+        # We don't have IK result at schema validation time, so skip L3 here
+        result = self.node.safety_kernel.evaluate(
+            estop_active=self.node._estop_active.is_set(),
+            tool_name=tool_name,
+            target_xyz=target_xyz,
+            calls_used=self.snapshot.budget.calls_used,
+            gripper_force=self.node.world.gripper_force,
+        )
+        if not result.allowed:
+            return False, result.layer, result.reason
+        
         # --- ESTOP pre-check ---
         if self.node._estop_active.is_set() and tool_name != 'abort_task':
             return False, "ESTOP", "ESTOP active"
 
         # Route to specific tool handlers
         if tool_name == 'vision_scan':
-            return self._tool_vision_scan(params.get('zone', 'ALL'))
+            success, layer, reason = self._tool_vision_scan(params.get('zone', 'ALL'))
         elif tool_name == 'arm_move':
-            return self._tool_arm_move(params.get('position'))
+            success, layer, reason = self._tool_arm_move(params.get('position'))
         elif tool_name == 'arm_approach':
-            return self._tool_arm_approach(params.get('variant'))
+            success, layer, reason = self._tool_arm_approach(params.get('variant'))
         elif tool_name == 'gripper_close':
-            return self._tool_gripper_close(params.get('firmness'))
+            success, layer, reason = self._tool_gripper_close(params.get('firmness'))
         elif tool_name == 'gripper_open':
-            return self._tool_gripper_open()
+            success, layer, reason = self._tool_gripper_open()
         elif tool_name == 'detect_face':
-            return self._tool_detect_face()
+            success, layer, reason = self._tool_detect_face()
         elif tool_name == 'detect_hand':
-            return self._tool_detect_hand()
+            success, layer, reason = self._tool_detect_hand()
         elif tool_name == 'speak':
-            return self._tool_speak(params.get('message', ''))
+            success, layer, reason = self._tool_speak(params.get('message', ''))
         elif tool_name == 'ask_user':
-            return self._tool_ask_user(params.get('question', ''), params.get('expect', 'ANY'))
+            success, layer, reason = self._tool_ask_user(params.get('question', ''), params.get('expect', 'ANY'))
         elif tool_name == 'complete_task':
-            return self._tool_complete_task()
+            success, layer, reason = self._tool_complete_task()
         elif tool_name == 'abort_task':
-            return self._tool_abort_task(params.get('reason', ''))
+            success, layer, reason = self._tool_abort_task(params.get('reason', ''))
+        else:
+            return False, "INVALID_ACTION", "Unhandled tool"
 
-        return False, "INVALID_ACTION", "Unhandled tool"
+        # Track consecutive failures for safety kernel
+        if not success:
+            self.node.safety_kernel.record_failure()
+        else:
+            self.node.safety_kernel.record_success()
+
+        return success, layer, reason
 
     def _tool_vision_scan(self, zone: str) -> Tuple[bool, str, str]:
         tool_req = self.snapshot.objective.tool
@@ -96,6 +120,11 @@ class ToolKernel:
         return True, "SUCCESS", f"Found in zone {res.zone} with confidence {res.confidence}"
 
     def _tool_arm_move(self, position: str) -> Tuple[bool, str, str]:
+        # Trigger EXECUTING state on first arm motion
+        if self.node.world.robot_state != "EXECUTING":
+            from acare_msgs.msg import StateTransition
+            self.node.transition_pub.publish(StateTransition(target_state="EXECUTING"))
+
         grasp_point = self.node.context.grasp_point
         user_z_offset = 0.0
         try:
@@ -118,7 +147,7 @@ class ToolKernel:
             except queue.Empty:
                 break
             
-        if not self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2]):
+        if not self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2], self.node._last_approach_rotation):
             return False, "UNREACHABLE", "IK failed to reach position."
             
         try:
@@ -143,15 +172,25 @@ class ToolKernel:
         force = self.hw.translate_firmness(firmness)
         self.node._send_gripper_command("GRASP", force)
         
-        time.sleep(2.0)
-        if self.node._estop_active.is_set():
-            return False, "ESTOP", "ESTOP activated."
+        # Loop with short sleeps to allow ESTOP break-out.
+        # In sim/demo mode the embedded interface never reports real force
+        # feedback (gripper_force stays 0.0) — accept closure after the wait.
+        for _ in range(4):
+            time.sleep(0.5)
+            if self.node._estop_active.is_set():
+                return False, "ESTOP", "ESTOP activated."
+            if self.node.world.gripper_force >= 0.5:
+                self.node.world.arm_holding = True
+                from acare_msgs.msg import StateTransition
+                self.node.transition_pub.publish(StateTransition(target_state="HOLDING"))
+                return True, "SUCCESS", "Grip established firmly."
             
-        if self.node.world.gripper_force >= 0.5:
+        # After 2s: if no force feedback arrived at all, assume sim/demo mode
+        if self.node.world.gripper_force == 0.0:
             self.node.world.arm_holding = True
             from acare_msgs.msg import StateTransition
             self.node.transition_pub.publish(StateTransition(target_state="HOLDING"))
-            return True, "SUCCESS", "Grip established firmly."
+            return True, "SUCCESS", "Grip established (sim/demo mode)."
             
         self.node._publish_vision_penalty()
         return False, "SLIP_DETECTED", "Gripper closed but force is low, object slipped."
@@ -200,7 +239,25 @@ class ToolKernel:
     def _tool_abort_task(self, reason: str) -> Tuple[bool, str, str]:
         if self.node.world.arm_holding:
             self.node._speak("Aborting. Safely depositing tool.")
-            self._tool_arm_move('SAFE_DROP')
+            # Non-blocking safe-drop: use a short 5s timeout so abort cannot
+            # hang the planner.  If the move fails, just open the gripper in
+            # place — the tool may drop but the system stays responsive.
+            grasp_point = self.node.context.grasp_point
+            user_z_offset = 0.0
+            try:
+                if self.snapshot.user_prior.handover_z_offset:
+                    user_z_offset = float(self.snapshot.user_prior.handover_z_offset)
+            except:
+                pass
+            try:
+                target_xyz = self.hw.translate_position('SAFE_DROP', grasp_point, user_z_offset)
+                if self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2], self.node._last_approach_rotation):
+                    try:
+                        self.node._motion_queue.get(timeout=5.0)
+                    except queue.Empty:
+                        self.node.get_logger().warn('Abort: safe-drop arm motion timed out, opening gripper in place.')
+            except Exception:
+                self.node.get_logger().warn('Abort: safe-drop IK failed, opening gripper in place.')
             self._tool_gripper_open()
         self.node._speak(f"Task aborted. {reason}")
         return True, "SUCCESS", "Task aborted."

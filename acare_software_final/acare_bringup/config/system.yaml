@@ -68,8 +68,11 @@ camera:
   # Leave empty until `vision_node` logs the exact parameter names exported by /ascamera_hp60c.
   control_overrides: {}
   # Extrinsics — 4x4 transform camera→robot base, flat 16-element list
-  # STILL PLACEHOLDER (identity) — fill after arm assembly + camera mounting
+  # STILL PLACEHOLDER (identity) — fill after arm assembly + camera calibration
   # (admin.py calibrate Step 5). Until then 3D positions are in CAMERA frame.
+  # NOTE: For demo, camera is assumed mounted at a known position. After
+  # calibration, update this with the real PnP result so positions are in the
+  # robot base frame and arm movements work correctly.
   T_robot_camera: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
 
 vision:
@@ -92,7 +95,16 @@ vision:
     - [-0.035, 0.025]
   # Viewpoints defined after arm calibration (admin.py calibrate Step 5)
   # Each entry: {zone: str, joint_angles: [float x6]}
-  viewpoints: []
+  # Demo defaults — three zones matching probability_map.yaml zones A/B/C.
+  # Wrist is pitched for a top-down look (J5 ≈ +1.57); J4/J6 ≈ 0.
+  # Replace with calibrated values after arm assembly.
+  viewpoints:
+    - zone: A
+      joint_angles: [0.5, 0.2, -0.5, 0.0, 0.3, 0.0]
+    - zone: B
+      joint_angles: [0.0, 0.2, -0.5, 0.0, 0.3, 0.0]
+    - zone: C
+      joint_angles: [-0.5, 0.2, -0.5, 0.0, 0.3, 0.0]
 
 voice:
   tts_normal:   edge_tts
@@ -105,7 +117,7 @@ voice:
   network_fail_hold_threshold_seconds: 5
   session_inactivity_timeout_seconds: 300
   handover_timeout_seconds: 30
-  estop_keywords: [stop, halt, emergency, abort, ruko, bas]
+  estop_keywords: [stop, halt, emergency, abort, freeze, hold, cease, kill, ruko, bas]
 
 auth:
   voice_similarity_threshold: 0.85

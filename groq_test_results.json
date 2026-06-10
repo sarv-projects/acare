@@ -1,0 +1,62 @@
+[
+  {
+    "call": 1,
+    "status": "ERROR",
+    "time": 0.9271285533905029,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'fa"
+  },
+  {
+    "call": 2,
+    "status": "ERROR",
+    "time": 0.35850977897644043,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'fa"
+  },
+  {
+    "call": 3,
+    "status": "OK",
+    "time": 0.3588728904724121,
+    "tool": "search"
+  },
+  {
+    "call": 4,
+    "status": "OK",
+    "time": 0.3363921642303467,
+    "tool": "search"
+  },
+  {
+    "call": 5,
+    "status": "RATE_LIMIT",
+    "time": 0.38437628746032715,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'fa"
+  },
+  {
+    "call": 6,
+    "status": "ERROR",
+    "time": 0.37473058700561523,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'fa"
+  },
+  {
+    "call": 7,
+    "status": "ERROR",
+    "time": 0.36724138259887695,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'fa"
+  },
+  {
+    "call": 8,
+    "status": "RATE_LIMIT",
+    "time": 0.4558897018432617,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'fa"
+  },
+  {
+    "call": 9,
+    "status": "OK",
+    "time": 0.3721339702606201,
+    "tool": "scan"
+  },
+  {
+    "call": 10,
+    "status": "ERROR",
+    "time": 0.3740818500518799,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'fa"
+  }
+]

@@ -27,29 +27,19 @@ import json
 from .fake_detector import FakeDetector
 from .localiser import Localiser
 from acare_bringup.paths import PROBABILITY_MAP_YAML, SYSTEM_YAML
+from acare_planner.tool_registry import get_all_yolo_classes, YOLO_CLASS_MAP
 
 PROB_MAP_PATH = PROBABILITY_MAP_YAML
 
 
+# All tool classes the model can detect (imported from ToolRegistry)
+ALL_TOOLS = get_all_yolo_classes()
 
-# All tool classes the model can detect (6 classes, matching trained YOLO model)
-ALL_TOOLS = [
-    'cream', 'medical scissors', 'oxymeter',
-    'plaster', 'surgical forceps', 'thermometer',
-]
+# Map from model class name to canonical system name (imported from ToolRegistry)
+CANONICAL = dict(YOLO_CLASS_MAP)
 
-# Map from model class name to canonical system name
-CANONICAL = {
-    'cream': 'cream',
-    'medical scissors': 'scissors',
-    'oxymeter': 'oximeter',
-    'plaster': 'plaster',
-    'surgical forceps': 'forceps',
-    'thermometer': 'thermometer',
-}
-
-# Reverse map: canonical → model class name (for lookup by tool name from intent)
-REVERSE_CANONICAL = {v: k for k, v in CANONICAL.items()}
+# Reverse map: canonical -> model class name (for lookup by tool name from intent)
+REVERSE_CANONICAL = {v: k for k, v in YOLO_CLASS_MAP.items()}
 
 
 class NBVSearch:

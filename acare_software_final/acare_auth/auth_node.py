@@ -626,6 +626,36 @@ class AuthNode(Node):
     def _on_auth_request(self, msg: AuthRequest):
         if msg.request_type == "validate_intent" and msg.tool and self._pending_intent is None:
             self._pending_intent = PendingIntent(tool=msg.tool, action="fetch", confidence=msg.confidence)
+        # Handle face detection requests (from planner's detect_face tool).
+        # The planner publishes AuthRequest(modality="face") and waits on
+        # /auth_result.  Run a one-shot face verification on the latest RGB
+        # frame and publish the result immediately.
+        if msg.modality == "face" or msg.request_type == "face":
+            # Demo or no face backend: auto-succeed
+            if self._demo_mode or not self.face_verifier.available or self._latest_rgb is None:
+                uid = self._active_user_id or "demo"
+                uname = self._active_user_name or "Demo User"
+                urole = self._active_user_role or "surgeon"
+                self._publish_auth(True, uid, uname, urole, True, 0.99, 0.0)
+                return
+            import cv2
+            bgr_frame = cv2.cvtColor(self._latest_rgb, cv2.COLOR_RGB2BGR)
+            # Check active user first
+            if self._active_user_id:
+                user = self.store.get(self._active_user_id)
+                if user is not None and user.face_emb is not None:
+                    matched, sim = self.face_verifier.verify(bgr_frame, user.face_emb)
+                    self._publish_auth(matched, user.user_id, user.name, user.role, matched, sim, 0.0)
+                    return
+            # No active user — try best face match across all enrolled users
+            best_user, best_sim = self._find_best_face_match()
+            if best_user is not None and best_sim >= getattr(self.face_verifier, 'THRESHOLD', 0.5):
+                self._publish_auth(True, best_user.user_id, best_user.name, best_user.role, True, best_sim, 0.0)
+            else:
+                uid = self._active_user_id or ""
+                uname = self._active_user_name or "Unknown"
+                urole = self._active_user_role or ""
+                self._publish_auth(False, uid, uname, urole, False, 0.0, 0.0)
 
     def _on_transcript(self, msg: Transcript):
         if self._robot_state == "ESTOP":

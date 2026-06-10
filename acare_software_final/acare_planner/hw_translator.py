@@ -62,5 +62,5 @@ class HWTranslator:
             # Base rest position
             return [0.0, 0.2, 0.2]
         
-        # Fallback for anything else (or Tray Zones if passed)
-        return [0.0, 0.4, 0.1]
+        # Unknown position — raise error instead of silent fallback
+        raise ValueError(f"Unknown position: {pos_name}")

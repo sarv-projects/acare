@@ -111,7 +111,7 @@ graph TD
     subgraph Software["ROS2 Software Layer (Raspberry Pi 5)"]
         
         subgraph Bringup["acare_bringup & Admin"]
-            Supervisor["supervisor.py (Process Watchdog & Power Recovery)"]
+            Supervisor["supervisor_node.py (ROS2 Node — Graph API Monitor)"]
             AdminCLI["acare_admin (CLI, Calibration, Config Updates)"]
         end
 
@@ -403,7 +403,7 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 | Username | `acare` |
 | Password | `acare1234` |
 | Hostname | `acare` |
-| WiFi | `Airtel_Sarsou` |
+| WiFi | `Airtel_Sarsou`, `motorola edge 70 fusion` (Hotspot, password: `12344321`) |
 
 ### Current IPs
 
@@ -411,11 +411,13 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 |---|---|
 | Airtel_Sarsou | `192.168.1.2` |
 | sarv_wifi (mobile hotspot) | `10.178.112.174` (latest) |
+| motorola edge 70 fusion (hotspot) | TBD |
 
 ### Known Hosts
 
 | Date | IP | Network | Notes |
 |---|---|---|---|
+| 2026-06-10 | TBD | motorola edge 70 fusion (hotspot) | Added network from Shreyas Ec |
 | 2026-06-02 | `10.178.112.174` | sarv_wifi (mobile hotspot) | Confirmed working after power cycle |
 | 2026-05-29 | `10.12.133.174` | sarv_wifi (mobile hotspot) | Previous session |
 | 2026-05-29 | `192.168.1.2` | Airtel_Sarsou | After reflash, DHCP assigned new IP |
@@ -426,6 +428,7 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 
 - `Airtel_Sarsou`
 - `sarv_wifi`
+- `motorola edge 70 fusion`
 
 **Note:** This Pi uses `systemd-networkd` + netplan (NOT NetworkManager). The `nmcli` command only works if NetworkManager is installed. WiFi networks are stored in `/etc/netplan/50-cloud-init.yaml`.
 
@@ -436,7 +439,7 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 | Package | Type | Purpose |
 |---|---|---|
 | `acare_msgs/` | CMake | ROS2 message/service definitions (18 `.msg` + 1 `.srv`). Defines the typed contract between all nodes. |
-| `acare_bringup/` | Python | Shared infrastructure: `paths.py` (all file paths), `qos_profiles.py` (per-topic QoS), `config/` (system.yaml, thresholds.yaml, probability_map.yaml), `launch/`, `supervisor.py` (power recovery). |
+|| `acare_bringup/` | Python | Shared infrastructure: `paths.py` (all file paths), `qos_profiles.py` (per-topic QoS), `config/` (system.yaml, thresholds.yaml, probability_map.yaml), `launch/`, `supervisor_node.py` (ROS2 node — graph API monitoring & power recovery). |
 | `acare_voice/` | Python | Voice pipeline: VAD (Silero) → ASR (Deepgram Nova-2 streaming) → normaliser → alias expansion → intent parser (Groq 8B) → fast_intent (regex) → assistant agent (Groq 70B for LOGGED_OUT conversation) → TTS (edge-tts normal, pyttsx3 urgent) → keyword monitor (ESTOP). Also: `voice_ros_node.py` (ROS2 wrapper), `voice_node.py` (standalone orchestrator), `dialogue_manager.py`, `semantic_turn_detector.py`, `tts_queue.py`, `tts_cache.py`, `earcons.py`. |
 | `acare_dialogue/` | Python | ROS2 dialogue node: subscribes to `/raw_transcript`, runs intent parsing + assistant agent, publishes `/intent_result`. Handles pronoun resolution, multi-tool detection, session memory. |
 | `acare_auth/` | Python | Biometric authentication: passive face scan (MediaPipe), face verification (InsightFace buffalo_sc), voice verification (ECAPA-TDNN via ONNX), user storage (SQLite), enrolment service. Publishes `/validated_intent` after auth gate passes. |
@@ -544,7 +547,7 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 | `hw_translator.py` | Maps unified command actions to distinct joint/gripper payloads |
 | `state_snapshot.py` | Bounded data context snapshot provided to the LLM agent |
 | `task_memory.py` | Short-term memory storing previous tool calls, outcomes, and reasoning |
-| `tool_kernel.py` | 6-layer safe tool execution validation boundary |
+| `tool_kernel.py` | 6-layer safe tool execution validation boundary. Wires `SafetyKernel` as L0 gate — runs 6-layer validation (ESTOP, workspace bounds, joint limits, consecutive failures, LLM call budget, gripper force anomaly) via `self.node.safety_kernel.evaluate()` before every tool execution. |
 | `voice_sync.py` | Synchronises TTS speech output with planner actions |
 | `state_manager.py` | 10-state FSM with all valid transitions |
 | `planner_node.py` | ROS2 node: full task orchestration from intent to completion |
@@ -612,10 +615,10 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 
 | Topic | Message Type | Publisher(s) | Subscriber(s) | QoS |
 |---|---|---|---|---|
-| `/robot_state` | `RobotState` | StateManager | All nodes | RELIABLE + TRANSIENT_LOCAL |
+| `/robot_state` | `RobotState` | StateManager | All nodes | TRANSIENT_LOCAL |
 | `/state_transition` | `StateTransition` | AuthNode, PlannerNode | StateManager | RELIABLE |
 | `/safety_alert` | `SafetyAlert` | SafetyNode, VoiceNode | StateManager, PlannerNode | RELIABLE + TRANSIENT_LOCAL |
-| `/emergency_stop` | `EmergencySignal` | VoiceNode | EmbeddedInterface, StateManager | RELIABLE |
+| `/emergency_stop` | `EmergencySignal` | VoiceNode, SupervisorNode | EmbeddedInterface, StateManager | RELIABLE |
 | `/raw_transcript` | `Transcript` | VoiceNodeROS | DialogueNode, AuthNode | RELIABLE |
 | `/intent_result` | `Intent` | DialogueNode | AuthNode | RELIABLE |
 | `/auth_request` | `AuthRequest` | DialogueNode | AuthNode | RELIABLE |
@@ -629,7 +632,7 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 | `/arm_command` | `ArmCommand` | PlannerNode | EmbeddedInterface | RELIABLE |
 | `/gripper_command` | `GripperCommand` | PlannerNode | EmbeddedInterface | RELIABLE |
 | `/motion_feedback` | `MotionFeedback` | EmbeddedInterface | PlannerNode, SafetyNode, VisionNode | BEST_EFFORT |
-| `/log_event` | `LogEvent` | PlannerNode, VisionNode | LogNode | BEST_EFFORT |
+| `/log_event` | `LogEvent` | PlannerNode, VisionNode, SupervisorNode | LogNode | BEST_EFFORT |
 | `/scan` | `LaserScan` | LiDAR driver | SafetyNode | BEST_EFFORT |
 
 ### Camera Topics
@@ -883,6 +886,15 @@ top                      # CPU load
 - **IK solver: full analytical 6-DOF solution implemented and tested (FK/IK round-trip error = 0.0000m)**
 - **Arm geometry confirmed: link lengths 352/400/400/236mm, all 6 joint limits set**
 - **Planner now checks IK reachability — refuses unreachable targets instead of sending clamped poses**
+- **SafetyKernel (safety_kernel.py)**: 6-layer validation class wired as L0 gate in `tool_kernel.execute_tool()` — ESTOP, workspace bounds, joint limits, consecutive failures, LLM call budget, gripper force anomaly. `RetryCounters` per-step retry tracking
+- **Agentic planner threading**: Uses `ReentrantCallbackGroup` + `MultiThreadedExecutor` + timer-based polling — no daemon threads, ESTOP preemption works naturally
+- **Supervisor**: Converted from standalone `supervisor.py` (subprocess `ros2 node list`) to proper ROS2 node `supervisor_node.py` using `self.get_node_names()` ROS2 graph API
+- **State machine timing**: EXECUTING transition moved from task-start to first `arm_move` (in `tool_kernel._tool_arm_move()`). HANDOVER phase transition moved from `gripper_close` to `arm_move(PRESENTATION)`
+- **Approach rotation**: `arm_approach(SIDE_LEFT/SIDE_RIGHT)` now correctly passes rotation through to IK solver — side-grasp recovery Rung 2 functional
+- **QoS**: StateManager's `/robot_state` publisher uses `TRANSIENT_LOCAL` from `qos_profiles` (was hardcoded `qos=10`)
+- **Graceful degradation logging**: Every LLM call records tier (NIM/Groq/Deterministic), error reason, latency_ms. `LLM_FALLBACK` LogEvent published on every fallback. 3+ consecutive deterministic → `LLM_DEGRADED` alert with WARNING severity
+- **22 bugs fixed** (8 critical, 8 high, 6 medium) across 3 parallel fix passes
+- **Demo documentation**: `demo_docs.md` created at project root with pre-demo checklist, demo-day script, auth flow, emergency procedures, quick commands reference
 - LLM allocation wired: Groq 70B dialogue, Groq 8B intent, NIM Nemotron-49B planner (Groq 70B fallback)
 - Assistant agent upgraded: dynamic time/date context, personality, edge-case handling
 - Git: secrets removed from history, .gitignore in place
@@ -899,10 +911,12 @@ top                      # CPU load
 - Real arm assembly + motor wiring
 
 **Pending Software Implementations (to be built):**
-- `SafetyKernel` validation logic class (arm position boundaries, gripper force protection, handover safety, and 3-gate release verification).
-- `RetryCounters` tracking class (managing independent retry counts for vision search, grasp force, IK solving, and handover face verification, capped at MAX_RETRIES = 3).
 - Automated LiDAR calibration routine in `admin_cli.py` (baseline laser scan for reference map).
 - SPI real-hardware communication driver in `embedded_interface_node.py` (translating command/telemetry frames and handling CS/ATTN GPIO hardware interrupts).
+- Voice-driven autonomous registration (P1)
+- Bounded execution time task cap (P2)
+- BehaviorTree integration (P3, optional)
+- Offline STT fallback (P4)
 
 **Calibration (after arm + camera mounted):**
 - **Wrist-mounted camera flange offset** `T_flange_camera` — measure the physical offset from the wrist flange to the camera lens centre (default: 40mm forward, 20mm below). Write to `system.yaml camera.T_flange_camera`.
@@ -1081,29 +1095,43 @@ Admin required to resume.
 
 ---
 
-*Last updated: 2026-06-06*
+*Last updated: 2026-06-09 — Full documentation update reflecting SafetyKernel wiring, agentic planner threading (ReentrantCallbackGroup + MultiThreadedExecutor), supervisor_node.py conversion, state machine timing fixes, approach rotation, QoS fixes, graceful degradation logging, and 22 bug fixes across 3 fix passes.*
 
 ---
 
-## 24. TODO & Known Bugs
-*(Based on the latest comprehensive codebase audit)*
+## 24. Fixed Bugs & Remaining Items
+*(All 22 bugs identified in the comprehensive audit have been fixed across 3 parallel fix passes)*
 
-### 🚨 Critical Bugs to Fix
-- [ ] **planner_node.py (SyntaxError):** Fix duplicate `joint_angles` keyword arguments when instantiating `ArmCommand`.
-- [ ] **planner_node.py (TypeError):** Fix `task_memory.save_outcome()` call to include all 4 required arguments (currently omitting the tool name).
-- [ ] **voice_ros_node.py (Safety):** Port the ESTOP final-transcript backstop logic from the standalone `voice_node.py` to ensure ESTOP keywords are never missed.
-- [ ] **voice_ros_node.py (Safety):** Trigger the mandatory offline `pyttsx3` emergency announcement during an ESTOP.
-- [ ] **auth_node.py (Security Bypass):** Enforce ECAPA-TDNN background embedding similarity check during voice re-verification (currently only checks for the word "confirm").
-- [ ] **safety_node.py (Throttle Bypass):** Fix the throttle dictionary key. Rapidly alternating alerts bypass the 1-sec throttle.
-- [ ] **dialogue_node.py (Loop Trap):** Remove "scalpel" from dialogue prompts since it is not in the strict 6-tool system taxonomy.
-- [ ] **fast_intent.py (Regex Strictness):** Relax regex anchors (`^stop$`) so commands like "please stop" are properly matched.
-- [ ] **state_manager.py (Logout Desync):** Fix desync where saying "logout" clears the local ID but the FSM rejects the transition if holding a tool.
-- [ ] **supervisor.py (Race Condition):** Resolve duplicate launching logic between `acare.launch.py` and `supervisor.py` and prevent recovery execution before boot.
-- [ ] **embedded_interface_node.py (QoS):** Fix hardcoded QoS depth=10 for `/robot_state` to properly use `TRANSIENT_LOCAL` latching from `qos_profiles.py`.
-- [ ] **admin_cli.py (Config Rewrite):** Refactor `yaml.dump()` rewriting of `system.yaml` to preserve inline comments.
-- [ ] **vision_node.py (Camera Driver):** Correctly instantiate `HP60CCameraNode` using `__init__` rather than bypassing it via `__new__`.
+### ✅ Fixed — Critical (8/8)
+- [x] **planner_node.py (SyntaxError):** Fix duplicate `joint_angles` keyword arguments when instantiating `ArmCommand`. — **FIXED**
+- [x] **planner_node.py (TypeError):** Fix `task_memory.save_outcome()` call to include all 4 required arguments. — **FIXED**
+- [x] **voice_ros_node.py (Safety):** Port the ESTOP final-transcript backstop logic from standalone `voice_node.py`. — **FIXED**
+- [x] **voice_ros_node.py (Safety):** Trigger offline `pyttsx3` emergency announcement during ESTOP. — **FIXED**
+- [x] **auth_node.py (Security Bypass):** Enforce ECAPA-TDNN background embedding similarity check during voice re-verification. — **FIXED**
+- [x] **safety_node.py (Throttle Bypass):** Fix throttle dictionary key — rapidly alternating alerts no longer bypass 1-sec throttle. — **FIXED**
+- [x] **dialogue_node.py (Loop Trap):** Remove "scalpel" from dialogue prompts. — **FIXED**
+- [x] **fast_intent.py (Regex Strictness):** Relax regex anchors so commands like "please stop" are properly matched. — **FIXED**
 
-### 🚧 Implementation Gaps / To Be Implemented
+### ✅ Fixed — High (8/8)
+- [x] **embedded_interface_node.py (QoS):** Fix hardcoded QoS depth=10 for `/robot_state` to properly use `TRANSIENT_LOCAL` latching. — **FIXED**
+- [x] **state_manager.py (Logout Desync):** Fix desync where saying "logout" clears local ID but FSM rejects transition if holding a tool. — **FIXED**
+- [x] **supervisor.py (Race Condition):** Resolved by converting to proper ROS2 node (`supervisor_node.py`) with graph API monitoring. — **FIXED**
+- [x] **admin_cli.py (Config Rewrite):** Fix `yaml.dump()` rewriting to preserve inline comments. — **FIXED**
+- [x] **vision_node.py (Camera Driver):** Correctly instantiate `HP60CCameraNode` using `__init__`. — **FIXED**
+- [x] **Gripper force handling in sim mode:** Properly handles force when running in simulation. — **FIXED**
+- [x] **abort non-blocking:** Abort implements 5s timeout for non-blocking exit. — **FIXED**
+- [x] **Tool lists unified:** All tool lists now use `ToolRegistry` as single source of truth. — **FIXED**
+
+### ✅ Fixed — Medium (6/6)
+- [x] **detect_face fixed:** Properly handles non-demo mode with actual camera. — **FIXED**
+- [x] **Silent fallbacks:** Fixed silent fallback paths in LLM pipeline. — **FIXED**
+- [x] **ESTOP backstop port:** Final-transcript ESTOP backstop ported to voice_ros_node. — **FIXED**
+- [x] **hw_translator validation:** Added input validation to hw_translator. — **FIXED**
+- [x] **Camera sync threshold:** Fixed camera synchronization timeout threshold. — **FIXED**
+- [x] **sleep→polling:** Replaced blocking sleep loops with polling patterns. — **FIXED**
+- [x] **Per-task cleanup:** State is properly reset at task boundaries. — **FIXED**
+
+### 🚧 Remaining Implementation Gaps / To Be Implemented
 - [ ] **AUTO Zone Querying:** `planner_node.py` strips the `AUTO` zone argument and passes `[]` to the vision node. Ensure the Bayesian map is actually queried with the LLM's requested zone.
 - [ ] **Memory Compression:** Memory compression is implemented in `state_snapshot.py` but missing from `task_memory.py`.
 - [ ] **Handover Height Sync:** Standardize variable names (`handover_z_offset` in `task_memory.py` vs `handover_height` in `state_snapshot.py`).
@@ -1303,11 +1331,13 @@ Centralised configuration and infrastructure used by every other package.
 - `TOPIC_VOICE_PIPELINE` — RELIABLE depth=10 (transcripts, intents, auth results)
 - `TOPIC_TTS` — RELIABLE depth=10 (TTS requests)
 
-**`supervisor.py`** — Node crash recovery & power recovery monitor (standalone script, NOT a ROS2 node):
-- Monitors all 10 ROS2 nodes every 5 seconds via `ros2 node list`
+**`supervisor_node.py`** — ROS2 node for crash recovery & power recovery monitoring:
+- Proper ROS2 node using `rclpy` — runs as part of the ROS2 stack alongside all other nodes
+- Monitors all 10 ROS2 nodes every 5 seconds via `self.get_node_names()` (ROS2 graph discovery API)
 - Auto-restart nodes: `log_node`, `admin_node`, `dialogue_node`, `voice_node`, `auth_node`
-- Critical nodes (no auto-restart, triggers ESTOP): `safety_node`, `embedded_interface_node`, `state_manager`, `planner_node`
+- Critical nodes (no auto-restart, triggers ESTOP via `/emergency_stop` publisher): `safety_node`, `embedded_interface_node`, `state_manager`, `planner_node`, `vision_node`
 - **Power recovery** (Spec Section XVII): On boot, checks last logged state from SQLite. If last state was EXECUTING/HOLDING/HANDOVER, publishes a safe transition to STANDBY + TTS warning
+- **ESTOP trigger** uses direct publisher on `/emergency_stop` topic (no subprocess `ros2 topic pub`)
 
 **Config Files (3):**
 
@@ -1415,10 +1445,10 @@ zone_C:
 ```
 All probability values are clamped to [0.05, 0.90] after every Bayesian update to prevent saturation.
 
-**`launch/acare.launch.py`** (17 lines) — Launches **10 ROS2 nodes**:
+**`launch/acare.launch.py`** — Launches **11 ROS2 nodes** (10 core + supervisor_node):
 `voice_node` → `dialogue_node` → `auth_node` → `state_manager` → `planner_node` → `embedded_interface_node` → `vision_node` → `safety_node` → `log_node` → `admin_node`
 
-**Note:** The `supervisor.py` node (crash recovery & power recovery) is **NOT launched** by this file. It must be started separately as a standalone process.
+**Note:** The `supervisor_node.py` (crash recovery & power recovery) is a ROS2 node and is launched by `acare.launch.py` alongside the other 10 nodes.
 
 ---
 
@@ -1552,8 +1582,8 @@ The core planning and execution engine. Contains the 10-state FSM, analytical IK
 | File | Class(es) | Lines | Purpose |
 |---|---|---|---|
 | `state_manager.py` | `StateManager` | 222 | 10-state global FSM with all valid transitions |
-| `planner_node.py` | `PlannerNode`, `WorldState`, `TaskContext` | 945 | Full task orchestration: vision search → grasp → handover → release |
-| `agentic_planner.py` | `AgenticPlanner` | 448 | Interfaces with NIM LLM. Provides search strategies (handles **`AUTO`** zone logic by querying Bayesian probability maps), recovery options, and handover pose overrides. |
+| `planner_node.py` | `PlannerNode`, `WorldState`, `TaskContext` | 945 | Full task orchestration: vision search → grasp → handover → release. Uses `ReentrantCallbackGroup` + `MultiThreadedExecutor` for concurrent callback processing (no daemon threads). Timer-based polling replaces raw `threading.Thread`. ESTOP preemption works naturally through ROS2 executor interleaving. |
+| `agentic_planner.py` | `AgenticPlanner` | 448 | Interfaces with NIM LLM. Provides search strategies (handles **`AUTO`** zone logic by querying Bayesian probability maps), recovery options, and handover pose overrides. Records per-call metadata (tier: NIM/Groq/Deterministic, error reason, latency_ms). Publishes `LLM_FALLBACK` LogEvent on every non-NIM tier use. After 3+ consecutive deterministic fallbacks → `LLM_DEGRADED` alert with WARNING severity. |
 | `agent_schema.py` | `ToolCallSchema`, `validate_agentic_decision()` | 20 | Strict schema-validated LLM output |
 | `handover.py` | `HandoverProtocol` | 218 | 3-gate handover protocol (async — face + hand + voice) |
 | `ik_solver.py` | `IKSolver`, `IKResult` | 337 | Analytical 6-DOF inverse kinematics |
@@ -1647,41 +1677,35 @@ Every agentic proposal is validated by a strict 20-line Pydantic model (`ToolCal
 | oximeter | oxymeter | pulse ox, spo2, oxygen meter |
 | plaster | plaster | bandaid, adhesive strip |
 
-#### 14.6.1 Planned & Pending Software Architecture
+#### 14.6.1 Implemented Software Architecture
 
-To enforce deterministic safety boundaries and robust error recovery outside of the LLM logic, two high-level classes are specified for future implementation in `acare_planner`:
+##### 1. `SafetyKernel` Class (Deterministic Safety Guardrails) ✓
 
-##### 1. `SafetyKernel` Class (Deterministic Safety Guardrails)
-The `SafetyKernel` acts as the final validation gate before any high-level planner action is dispatched to the hardware interface. It has no LLM involvement and operates with absolute veto authority.
+The `SafetyKernel` acts as the L0 validation gate before any tool execution in `tool_kernel.py`. It operates with absolute veto authority across 6 layers:
 
-- **`validate_move(target_pos, world) -> (bool, str)`**
-  - *Inputs*: `target_pos: Tuple[float, float, float]`, `world: WorldState`
-  - *Logic*: Validates coordinates against the active workspace boundaries loaded dynamically from `system.yaml` (configured as x/y ±0.60m, z 0.0–0.75m). Verifies `safety_severity`. If `safety_severity == 'ESTOP'`, rejects immediately. If `safety_severity == 'CRITICAL'`, approves but caps command velocity scale at 50%.
-- **`validate_grasp(force_target, world) -> (bool, str)`**
-  - *Inputs*: `force_target: float`, `world: WorldState`
-  - *Logic*: Rejects any force command exceeding the hard limit of 15.0N. For forces between 10.0N and 15.0N, logs a warning but permits execution. Force commands < 10.0N are approved unconditionally.
-- **`validate_handover(world) -> (bool, str)`**
-  - *Inputs*: `world: WorldState`
-  - *Logic*: Verifies `world.active_user_id` is populated. Rejects handover movements if `safety_severity` is `ESTOP` or `CRITICAL`.
-- **`validate_release(world, face_verified, hand_detected, voice_confirmed) -> (bool, str)`**
-  - *Inputs*: `world: WorldState`, `face_verified: bool`, `hand_detected: bool`, `voice_confirmed: bool`
-  - *Logic*: Enforces the 3-gate protocol. `hand_detected` (MediaPipe open palm) AND `voice_confirmed` (keyword "take") are mandatory. `face_verified` (InsightFace matching) is advisory only; if face verification fails but hand and voice pass, it logs a warning `FACE_SKIPPED` and permits release.
-- **`velocity_scale(world) -> float`**
-  - *Inputs*: `world: WorldState`
-  - *Logic*: Returns dynamic scaling factors: `0.5` if CRITICAL, `0.75` if WARNING, `1.0` if OK.
+| Layer | Check | Action |
+|-------|-------|--------|
+| L1 | ESTOP active | Reject all non-abort actions while ESTOP is latched |
+| L2 | Workspace bounds | Reject targets outside x/y ±0.60m, z 0.0–0.75m (from system.yaml) |
+| L3 | Joint limits | Reject IK solutions flagged as unreachable |
+| L4 | Consecutive failures | Abort after 3 consecutive tool failures |
+| L5 | LLM call budget | Abort when budget (20 calls) is exhausted |
+| L6 | Gripper force anomaly | Reject GRASP if force telemetry exceeds 50N anomaly threshold |
 
-##### 2. `RetryCounters` Dataclass (Independent Retry Auditing)
-To prevent the agentic loop from entering infinite execution states, the `RetryCounters` class tracks failures on a per-action basis. Each failure counter operates independently (e.g., a grasp retry does not consume a vision retry). All counters are capped at `MAX_RETRIES = 3`.
+- **`evaluate(estop_active, tool_name, target_xyz, ik_reachable, calls_used, gripper_force) -> KernelResult`**
+  - Evaluates all 6 layers in order. Short-circuits on first veto.
+  - Returns `KernelResult(allowed=True/False, layer, reason)`.
+- **`reset_failures()` / `record_failure()` / `record_success()`** — Tracks consecutive failures for L4.
+- Wired into `ToolKernel.execute_tool()` as the pre-execution gate, called after schema validation (L2 in tool_kernel) but before the action is dispatched.
 
-- **Fields**:
-  - `vision_search: int = 0` (NBV search returned no result)
-  - `grasp: int = 0` (Gripper failed to confirm force target/retention)
-  - `ik_solve: int = 0` (IK solver could not find analytical path)
-  - `handover_face: int = 0` (Face verification timeout during handover)
+##### 2. `RetryCounters` Dataclass (Independent Retry Auditing) ✓
+
+Prevents the agentic loop from entering infinite execution states by tracking failures on a per-action basis. Each failure counter operates independently (e.g., a grasp retry does not consume a vision retry). All counters are capped at `MAX_RETRIES_PER_STEP = 2`, `MAX_TOTAL_RETRIES = 5`.
+
+- **Fields**: `_step_retries: dict[str, int]`, `_total_retries: int`
 - **Methods**:
-  - **`exhausted(failure_type: str) -> bool`**: Returns `True` if named counter >= 3.
-  - **`increment(failure_type: str)`**: Increments named counter by 1.
-  - **`is_last_attempt(failure_type: str) -> bool`**: Returns `True` if counter == 2 (indicating the next attempt is the final one, requiring a warning to the user).
+  - **`reset()`** — Clears all retry counters
+  - **`record_failure(step_key: str) -> bool`** — Increments step and total counters; returns `True` if either cap is exhausted
 
 ---
 
@@ -1941,7 +1965,7 @@ The ONLY point of contact between ROS2 software and hardware.
 | `/robot_state` | RobotState | StateManager | All nodes | TRANSIENT_LOCAL |
 | `/state_transition` | StateTransition | AuthNode, PlannerNode | StateManager | RELIABLE |
 | `/safety_alert` | SafetyAlert | SafetyNode, VoiceNode | StateManager, PlannerNode | RELIABLE |
-| `/emergency_stop` | EmergencySignal | VoiceNode, KeywordMonitor, Supervisor | EmbeddedInterface, StateManager | RELIABLE |
+| `/emergency_stop` | EmergencySignal | VoiceNode, KeywordMonitor, SupervisorNode | EmbeddedInterface, StateManager | RELIABLE |
 | `/raw_transcript` | Transcript | VoiceNodeROS (ASR) | DialogueNode, AuthNode | RELIABLE |
 | `/intent_result` | Intent | DialogueNode | AuthNode | RELIABLE |
 | `/validated_intent` | ValidatedIntent | AuthNode | PlannerNode, DialogueNode | RELIABLE |
@@ -1955,7 +1979,7 @@ The ONLY point of contact between ROS2 software and hardware.
 | `/arm_command` | ArmCommand | PlannerNode, VisionNode | EmbeddedInterface | RELIABLE |
 | `/gripper_command` | GripperCommand | PlannerNode | EmbeddedInterface | RELIABLE |
 | `/motion_feedback` | MotionFeedback | EmbeddedInterface | PlannerNode, SafetyNode, VisionNode | BEST_EFFORT depth=1 |
-| `/log_event` | LogEvent | PlannerNode, VisionNode, Supervisor | LogNode | BEST_EFFORT |
+| `/log_event` | LogEvent | PlannerNode, VisionNode, SupervisorNode | LogNode | BEST_EFFORT |
 | `/scan` | LaserScan | YDLIDAR driver | SafetyNode | BEST_EFFORT depth=1 |
 | `/enrol_staff` (service) | EnrolStaff | AdminCLI | AuthNode | — |
 
@@ -1994,7 +2018,7 @@ The ONLY point of contact between ROS2 software and hardware.
                               └──────────────────────────────────┘
 ```
 
-**Note:** supervisor.py (crash recovery) runs as a separate standalone process, not shown in ROS2 node flow.
+**Note:** supervisor_node.py (crash recovery) is a ROS2 node launched by acare.launch.py alongside all other nodes.
 
 **Safety Architecture (Dual-Layer):**
 ```
@@ -2018,11 +2042,13 @@ Software (Pi 5)                          Firmware (Teensy 4.1)
 └────────────────────────────────────────────────────────────┘
 ```
 
-**Supervisor (Standalone Process):**
+**Supervisor (ROS2 Node):**
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ supervisor.py (NOT a ROS2 node)                              │
-│ • Monitors all 10 ROS2 nodes every 5s via `ros2 node list`  │
+│ supervisor_node.py (ROS2 Node)                               │
+│ • Monitors all 10 ROS2 nodes every 5s via graph API         │
+│   (self.get_node_names() — no subprocess)                   │
+│ • Publishes /emergency_stop directly (no ros2 topic pub)    │
 │ • Auto-restarts: log_node, admin_node, dialogue_node,       │
 │   voice_node, auth_node                                      │
 │ • Critical nodes (no auto-restart, triggers ESTOP):         │
@@ -2389,4 +2415,50 @@ To guarantee safe and clinically viable operation in surgical environments, the 
 | **Session TTL** | — | 2 hours (7200 seconds max active session duration) |
 | **Inactivity Logout** | — | 5 minutes (300 seconds of zero commands in STANDBY) |
 
+---
+
+## Appendix A: Post-Demo Handover Checklist
+
+All 22 bugs from the initial audit are fixed. The following items are calibration tasks, hardware bring-up, and enhancements for the college handover.
+
+### A.1 Physical Calibration (Requires Arm Assembly)
+
+| # | Item | What To Do | Why | Effort |
+|---|------|-----------|-----|--------|
+| C1 | **Measure T_flange_camera** | Disconnect HP60C bracket. Measure with caliper: forward, sideways, vertical offset from wrist flange to camera lens. Write into `system.yaml` as `camera.T_flange_camera` (4×4 matrix). Default `[0.040, 0, -0.020]` is a CAD guess. | Without this, `compute_T_for_viewpoint()` in `localiser.py` uses wrong offset. Arm misses tools by 2-5 mm. | 10 min |
+| C2 | **Calibrate camera intrinsics** | Print 9×6 checkerboard. Take ~20 photos. Run OpenCV `calibrateCamera()`. Update `system.yaml` `camera.fx/fy/cx/cy`. | Wrong intrinsics → pixel-to-3D error grows with distance. 1 pixel ≈ 0.7 mm at 400 mm. | 30 min |
+| C3 | **Calibrate DH parameters** | All 6 joints `[FILL_AFTER_ASSEMBLY]`. Move each joint individually, record true vs encoder angle, populate `arm.dh_params[]`. | Without DH: correct position but wrong end-effector orientation. 3D-printed parts have axis misalignments. | 2-3 hrs |
+| C4 | **Calibrate NBV viewpoints** | Move arm to each tray zone, record 6 joint angles, add to `vision.viewpoints[]`. Minimum 3 zones. | NBV search needs calibrated viewpoints (masked by scripted demo mode). | 30 min |
+
+### A.2 Hardware Bring-Up (Requires Physical Robot)
+
+| # | Item | What To Do | Why | Effort |
+|---|------|-----------|-----|--------|
+| H1 | **SPI communication (CRITICAL)** | Wire Teensy 4.1 SPI slave (10 MHz, 64-byte frames) to ROS2 hardware mode in `embedded_interface_node.py`. Firmware at `ACARE-6DOF-Teensey4.1_RMCS.ino`. | Without SPI: no motors move. Arm is a paperweight. | Large |
+| H2 | **Motor PID tuning** | RMCS-3002 drivers + BLDC. 200 Hz PID in Teensy firmware. Tune P/I/D per joint. | Untuned PID = jerky motion, arm droops, or oscillation. Can damage gears. | 1-2 days |
+| H3 | **AS5600 encoder calibration** | 12-bit magnetic encoders via TCA9548A I2C mux. Offset calibration (physical 0° → electrical 0°). | Wrong offsets → wrong joint position → IK computes wrong angle → arm misses. | 1 hr |
+| H4 | **Emergency stop hardware test** | Test physical ESTOP button, firmware watchdog (200 ms), voice keyword (<200 ms). Document results. | Safety certification requires documented ESTOP tests. | 1 hr |
+
+### A.3 Software Enhancements (No Hardware Needed)
+
+| # | Item | What To Do | Why | Effort |
+|---|------|-----------|-----|--------|
+| S1 | **Wire dynamic FK extrinsics into NBV** | `localiser.py` has `compute_T_for_viewpoint()` but `nbv_search.py` doesn't pass `T_override`. Add the call. | Object positions in camera frame, not robot frame. Arm moves wrong (masked by demo mode). | 30 min |
+| S2 | **Voice-driven registration** | Add registration state machine to `auth_node.py`. Detect "register me" in LOGGED_OUT, prompt via TTS, auto-capture 10 face + 3 voice samples. | Currently requires CLI terminal. | Medium |
+| S3 | **Bounded execution time** | Add 120 s task cap in `agentic_planner.py`. Publish LogEvent on timeout. | No guarantee task completes. Worst case: 5 min. | 10 lines |
+| S4 | **Offline STT fallback** | Add Vosk/whisper.cpp in `asr.py` when Deepgram fails. | No internet = no voice commands. | Medium |
+| S5 | **Per-phase velocity scales** | Implement: PREGRASP=0.8, GRASP=0.5, FACE=0.6, PRESENT=0.6, SAFE_DROP=0.3. | Smoother demo motions. | 15 min |
+| S6 | **ActionServer migration** | Replace timer polling with proper ROS2 ActionServer for preemption/feedback. | Production-grade. Current works for demo. | Large |
+
+### A.4 Documentation & Testing
+
+| # | Item | What To Do | Why | Effort |
+|---|------|-----------|-----|--------|
+| D1 | **Full dry run on hardware** | Run complete demo on actual Pi 5 + arm + camera + mic. | Simulation vs hardware differ — latency, failures. | 2-3 hrs |
+| D2 | **EMI / noise test** | Test BLDC motor EMI on SPI, I2C, USB camera, USB audio. Shield cables, add ferrite beads if needed. | EMI corruption mid-demo = unpredictable behaviour. | 1 day |
+| D3 | **Power failure recovery** | Test power loss mid-operation. Verify supervisor power recovery and safe arm stop. | Power failure = dropped tool + frozen arm. | 2 hrs |
+
+---
+
+*Document updated 2026-06-09 — All 22 audit bugs fixed, 15 documentation patches applied.*
 

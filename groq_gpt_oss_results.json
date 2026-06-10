@@ -1,0 +1,250 @@
+[
+  {
+    "call": 1,
+    "status": "OK",
+    "time": 1.3127532005310059,
+    "tool": "vision_scan",
+    "reason": "Locate first required instrument (scalpel) in zone",
+    "json_valid": true
+  },
+  {
+    "call": 2,
+    "status": "OK",
+    "time": 0.48383164405822754,
+    "tool": "vision_scan",
+    "reason": "Tool not found in zone A, scanning next zone",
+    "json_valid": true
+  },
+  {
+    "call": 3,
+    "status": "RATE_LIMIT",
+    "time": 0.6472258567810059,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 4,
+    "status": "RATE_LIMIT",
+    "time": 0.6762270927429199,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 5,
+    "status": "OK",
+    "time": 0.5165643692016602,
+    "tool": "gripper_close",
+    "reason": "Slip detected, attempting firmer grip",
+    "json_valid": true
+  },
+  {
+    "call": 6,
+    "status": "ERROR",
+    "time": 0.6814658641815186,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 7,
+    "status": "RATE_LIMIT",
+    "time": 0.6919248104095459,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 8,
+    "status": "ERROR",
+    "time": 0.6613931655883789,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 9,
+    "status": "OK",
+    "time": 0.5710985660552979,
+    "tool": "vision_scan",
+    "reason": "Previous scan in zone A failed; need to locate nex",
+    "json_valid": true
+  },
+  {
+    "call": 10,
+    "status": "ERROR",
+    "time": 0.7405955791473389,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 11,
+    "status": "OK",
+    "time": 4.5226829051971436,
+    "tool": "vision_scan",
+    "reason": "Searching for the next required tool (scalpel) in ",
+    "json_valid": true
+  },
+  {
+    "call": 12,
+    "status": "OK",
+    "time": 3.5607333183288574,
+    "tool": "vision_scan",
+    "reason": "Tool not found in zone A; scanning next zone",
+    "json_valid": true
+  },
+  {
+    "call": 13,
+    "status": "OK",
+    "time": 4.628499746322632,
+    "tool": "arm_approach",
+    "reason": "Approach scalpel in zone B for grasp",
+    "json_valid": true
+  },
+  {
+    "call": 14,
+    "status": "RATE_LIMIT",
+    "time": 7.379566669464111,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 15,
+    "status": "OK",
+    "time": 6.082709789276123,
+    "tool": "gripper_close",
+    "reason": "Slip detected, applying firmer grip",
+    "json_valid": true
+  },
+  {
+    "call": 16,
+    "status": "ERROR",
+    "time": 2.796302318572998,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 17,
+    "status": "RATE_LIMIT",
+    "time": 6.857532024383545,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 18,
+    "status": "ERROR",
+    "time": 7.177809476852417,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 19,
+    "status": "OK",
+    "time": 5.8359644412994385,
+    "tool": "vision_scan",
+    "reason": "Locate next tool (forceps) after previous scan in ",
+    "json_valid": true
+  },
+  {
+    "call": 20,
+    "status": "ERROR",
+    "time": 6.801037073135376,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 21,
+    "status": "OK",
+    "time": 3.8165793418884277,
+    "tool": "vision_scan",
+    "reason": "Search for next required tool in zone A",
+    "json_valid": true
+  },
+  {
+    "call": 22,
+    "status": "OK",
+    "time": 5.5952489376068115,
+    "tool": "vision_scan",
+    "reason": "Tool not found in zone A, scanning next zone",
+    "json_valid": true
+  },
+  {
+    "call": 23,
+    "status": "RATE_LIMIT",
+    "time": 4.769376516342163,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 24,
+    "status": "OK",
+    "time": 5.55195426940918,
+    "tool": "gripper_close",
+    "reason": "Grasp scalpel after successful top approach",
+    "json_valid": true
+  },
+  {
+    "call": 25,
+    "status": "OK",
+    "time": 5.669673919677734,
+    "tool": "gripper_close",
+    "reason": "Slip detected; escalating grip force per recovery ",
+    "json_valid": true
+  },
+  {
+    "call": 26,
+    "status": "ERROR",
+    "time": 4.680217504501343,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 27,
+    "status": "ERROR",
+    "time": 6.00465989112854,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 28,
+    "status": "RATE_LIMIT",
+    "time": 7.4032981395721436,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 29,
+    "status": "OK",
+    "time": 6.14260196685791,
+    "tool": "vision_scan",
+    "reason": "Locate next tool (forceps) after previous scan fai",
+    "json_valid": true
+  },
+  {
+    "call": 30,
+    "status": "ERROR",
+    "time": 1.7799272537231445,
+    "error": "Error code: 400 - {'error': {'message': \"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\", 'type': 'inva"
+  },
+  {
+    "call": 31,
+    "status": "OK",
+    "time": 4.73144268989563,
+    "tool": "scalpel",
+    "reason": "Searching for scalpel in zone A",
+    "json_valid": true
+  },
+  {
+    "call": 32,
+    "status": "OK",
+    "time": 4.55304217338562,
+    "tool": "vision_scan",
+    "reason": "Tool not found in zone A; scanning next zone",
+    "json_valid": true
+  },
+  {
+    "call": 33,
+    "status": "OK",
+    "time": 1.6319549083709717,
+    "tool": "arm_approach",
+    "reason": "Approach scalpel in zone B for pickup",
+    "json_valid": true
+  },
+  {
+    "call": 34,
+    "status": "OK",
+    "time": 4.677213191986084,
+    "tool": "arm_move",
+    "reason": "",
+    "json_valid": true
+  },
+  {
+    "call": 35,
+    "status": "OK",
+    "time": 3.5894505977630615,
+    "tool": "gripper_close",
+    "reason": "Slip detected, increasing grip force",
+    "json_valid": true
+  }
+]

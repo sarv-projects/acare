@@ -17,6 +17,8 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from acare_bringup.qos_profiles import TOPIC_STATE
+
 try:
     from acare_msgs.msg import RobotState, StateTransition, SafetyAlert
     MSGS_OK = True
@@ -50,11 +52,11 @@ class StateManager(Node):
         self._inactivity_timer = None
 
         if MSGS_OK:
-            self.state_pub = self.create_publisher(RobotState, '/robot_state', 10)
+            self.state_pub = self.create_publisher(RobotState, '/robot_state', TOPIC_STATE)
             self.create_subscription(StateTransition, '/state_transition',
-                                     self._on_transition, 10)
+                                     self._on_transition, TOPIC_STATE)
             self.create_subscription(SafetyAlert, '/safety_alert',
-                                     self._on_safety_alert, 10)
+                                     self._on_safety_alert, TOPIC_STATE)
         else:
             self.get_logger().error('acare_msgs not available — state_manager cannot run')
             return

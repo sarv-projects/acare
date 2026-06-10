@@ -264,8 +264,8 @@ class VisionNode(Node):
                 with node_self._cam_lock:
                     if node_self._latest_rgb is None or node_self._latest_depth is None:
                         return None, None
-                    # Ensure frames were received within 100ms of each other to prevent lunges
-                    if abs(node_self._last_rgb_at - node_self._last_depth_at) > 0.1:
+                    # Ensure frames were received within 200ms of each other to prevent lunges
+                    if abs(node_self._last_rgb_at - node_self._last_depth_at) > 0.2:
                         return None, None
                     return node_self._latest_rgb.copy(), node_self._latest_depth.copy()
 
@@ -494,21 +494,15 @@ class VisionNode(Node):
         if self._is_demo_mode() and not self._camera_is_streaming():
             self.get_logger().info(
                 f'Vision: DEMO MODE — returning scripted detection for {tool_name}')
-            # Fixed tray position — 45cm in front, centred, 5cm above surface.
-            # Adjust x/y/z to match your actual tray placement.
-            SCRIPTED_POSITIONS = {
-                'cream':            (0.45, -0.10, 0.05),
-                'medical scissors': (0.45,  0.00, 0.05),
-                'oxymeter':         (0.45,  0.10, 0.05),
-                'plaster':          (0.50, -0.10, 0.05),
-                'surgical forceps': (0.50,  0.00, 0.05),
-                'thermometer':      (0.50,  0.10, 0.05),
-                # Alias matches
-                'scissors':         (0.45,  0.00, 0.05),
-                'forceps':          (0.50,  0.00, 0.05),
-                'oximeter':         (0.45,  0.10, 0.05),
-            }
-            pos = SCRIPTED_POSITIONS.get(tool_name.lower(), (0.45, 0.0, 0.05))
+            from acare_planner.tool_registry import SCRIPTED_POSITIONS
+            tool_lower = tool_name.lower()
+            if tool_lower not in SCRIPTED_POSITIONS:
+                self.get_logger().warning(
+                    f'Vision: DEMO MODE — no scripted position defined for {tool_name}')
+                with self._mode_lock:
+                    self.mode = 'IDLE'
+                return
+            pos = SCRIPTED_POSITIONS[tool_lower]
             result_dict = {
                 'found': True,
                 'tool': tool_name,

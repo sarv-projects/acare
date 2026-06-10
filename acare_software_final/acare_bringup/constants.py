@@ -4,16 +4,13 @@ Single source of truth for system-wide constants.
 
 Every package imports tool names, ESTOP keywords, and recovery keywords
 from here so that a single edit propagates everywhere.
+
+NOTE: VALID_TOOLS is imported from acare_planner.tool_registry (the canonical
+source).  This module re-exports it for convenience; all new code should
+import from tool_registry directly.
 """
 
-VALID_TOOLS = [
-    "cream",
-    "scissors",
-    "forceps",
-    "thermometer",
-    "oximeter",
-    "plaster",
-]
+from acare_planner.tool_registry import CANONICAL_TOOLS as VALID_TOOLS
 
 ESTOP_KEYWORDS = [
     "stop", "halt", "emergency", "abort", "ruko", "bas",

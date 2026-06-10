@@ -7,6 +7,9 @@ from typing import Optional
 from .state_snapshot import TaskSnapshot
 from .agent_schema import validate_agentic_decision, ToolCallSchema
 
+# Degradation logging
+from acare_msgs.msg import LogEvent
+
 PLANNER_SYSTEM_PROMPT = """You are the task executor for ACARE, a surgical instrument fetch robot.
 You receive a state snapshot and return exactly ONE tool call as JSON.
 HARD RULES:
@@ -85,6 +88,9 @@ class AgenticPlanner:
         self._nim_client = None
         self._groq_client = None
         self._init_clients()
+        # Degradation tracking
+        self._last_call_info = {}        # tier, error, latency_ms, tool_called
+        self._consecutive_deterministic = 0
 
     def _init_clients(self):
         try:
@@ -116,6 +122,7 @@ class AgenticPlanner:
             {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
             snapshot.to_message()
         ]
+        start_t = time.monotonic()
 
         if self._nim_client:
             try:
@@ -126,8 +133,13 @@ class AgenticPlanner:
                     temperature=0.1,
                     max_tokens=256
                 )
-                return validate_agentic_decision(json.loads(response.choices[0].message.content))
+                decision = validate_agentic_decision(json.loads(response.choices[0].message.content))
+                elapsed_ms = int((time.monotonic() - start_t) * 1000)
+                self._last_call_info = {'tier': 'NIM', 'error': '', 'latency_ms': elapsed_ms,
+                                        'tool_called': decision.tool if decision else ''}
+                return decision
             except Exception as e:
+                err_msg = str(e)
                 if self.logger: self.logger.info(f"NIM call failed: {e}")
 
         if self._groq_client:
@@ -139,11 +151,23 @@ class AgenticPlanner:
                     temperature=0.1,
                     max_tokens=256
                 )
-                return validate_agentic_decision(json.loads(response.choices[0].message.content))
+                decision = validate_agentic_decision(json.loads(response.choices[0].message.content))
+                elapsed_ms = int((time.monotonic() - start_t) * 1000)
+                self._last_call_info = {'tier': 'Groq', 'error': f'NIM->Groq: {err_msg}',
+                                        'latency_ms': elapsed_ms,
+                                        'tool_called': decision.tool if decision else ''}
+                return decision
             except Exception as e:
+                err_msg = str(e)
                 if self.logger: self.logger.warning(f"Groq call failed: {e}")
 
-        return self._deterministic_next_step(snapshot)
+        # Tier 3: Deterministic fallback
+        decision = self._deterministic_next_step(snapshot)
+        elapsed_ms = int((time.monotonic() - start_t) * 1000)
+        self._last_call_info = {'tier': 'Deterministic', 'error': f'Groq->Det: {err_msg}',
+                                'latency_ms': elapsed_ms,
+                                'tool_called': decision.tool if decision else ''}
+        return decision
 
     def _deterministic_next_step(self, snapshot: TaskSnapshot) -> ToolCallSchema:
         """Zero-LLM fallback logic based on the happy-path / recovery ladders."""
@@ -167,18 +191,18 @@ class AgenticPlanner:
                     return validate_agentic_decision({"thought": "Move to grasp", "tool": "arm_move", "params": {"position": "GRASP_POINT"}, "speak": ""})
                 if "GRASP_POINT" in last_action:
                     return validate_agentic_decision({"thought": "Close gripper", "tool": "gripper_close", "params": {"firmness": "NORMAL"}, "speak": ""})
+                if "FACE_HEIGHT" in last_action:
+                    return validate_agentic_decision({"thought": "Verify face", "tool": "detect_face", "params": {}, "speak": ""})
             if "gripper_close" in last_action:
                 if last_result == "SUCCESS":
                     return validate_agentic_decision({"thought": "Grasp success, to face", "tool": "arm_move", "params": {"position": "FACE_HEIGHT"}, "speak": ""})
                 if last_result == "SLIP_DETECTED":
                     return validate_agentic_decision({"thought": "Retry firm", "tool": "gripper_close", "params": {"firmness": "FIRM"}, "speak": ""})
+            if "detect_face" in last_action:
+                return validate_agentic_decision({"thought": "Present", "tool": "arm_move", "params": {"position": "PRESENTATION"}, "speak": ""})
             return validate_agentic_decision({"thought": "Grasp failed", "tool": "abort_task", "params": {"reason": "Grasp failed"}, "speak": ""})
             
         if phase == "HANDOVER":
-            if "arm_move" in last_action and "FACE_HEIGHT" in last_action and last_result == "SUCCESS":
-                return validate_agentic_decision({"thought": "Verify face", "tool": "detect_face", "params": {}, "speak": ""})
-            if "detect_face" in last_action:
-                return validate_agentic_decision({"thought": "Present", "tool": "arm_move", "params": {"position": "PRESENTATION"}, "speak": ""})
             if "arm_move" in last_action and "PRESENTATION" in last_action and last_result == "SUCCESS":
                 return validate_agentic_decision({"thought": "Wait hand", "tool": "detect_hand", "params": {}, "speak": ""})
             if "detect_hand" in last_action:
@@ -197,7 +221,7 @@ class AgenticPlanner:
         return validate_agentic_decision({"thought": "Fallback abort", "tool": "abort_task", "params": {"reason": "Deterministic fallback failed"}, "speak": ""})
 
     def run_task(self, node, tool_kernel, snapshot: TaskSnapshot):
-        """The main agentic loop. Replaces the old phase methods."""
+        """The main agentic loop with degradation logging."""
         while snapshot.budget.calls_remaining > 0:
             if node._estop_active.is_set():
                 break
@@ -208,6 +232,44 @@ class AgenticPlanner:
                 
             if not decision:
                 break
+
+            # Degradation logging: publish LogEvent for non-NIM tiers
+            tier = self._last_call_info.get('tier', 'Unknown')
+            if tier != 'NIM':
+                try:
+                    node.log_pub.publish(LogEvent(
+                        event_type='LLM_FALLBACK',
+                        user_id='',
+                        tool=self._last_call_info.get('tool_called', ''),
+                        state=snapshot.objective.task_phase,
+                        description=self._last_call_info.get('error', ''),
+                        timestamp=int(time.time() * 1000),
+                        safety_severity='OK'
+                    ))
+                except Exception:
+                    pass
+
+            # Track consecutive deterministic fallbacks for alerting
+            if tier == 'Deterministic':
+                self._consecutive_deterministic += 1
+            elif tier == 'NIM':
+                self._consecutive_deterministic = 0
+
+            if self._consecutive_deterministic >= 3:
+                try:
+                    node.log_pub.publish(LogEvent(
+                        event_type='LLM_DEGRADED',
+                        user_id='',
+                        tool=self._last_call_info.get('tool_called', ''),
+                        state=snapshot.objective.task_phase,
+                        description=f'3+ consecutive deterministic fallbacks. Primary LLM may be down.',
+                        timestamp=int(time.time() * 1000),
+                        safety_severity='WARNING'
+                    ))
+                except Exception:
+                    pass
+                if self.logger:
+                    self.logger.warning('LLM_DEGRADED: 3+ deterministic fallbacks')
 
             if decision.speak:
                 node._speak(decision.speak)
@@ -231,10 +293,10 @@ class AgenticPlanner:
             if not success and reason != "ESTOP":
                 snapshot.tried_and_failed.append(action_sig)
 
-            if decision.tool == "gripper_close" and success:
-                snapshot.objective.task_phase = "HANDOVER"
-            elif decision.tool == "vision_scan" and success:
+            if decision.tool == "vision_scan" and success:
                 snapshot.objective.task_phase = "GRASPING"
+            elif decision.tool == "arm_move" and success and decision.params.get('position') == 'PRESENTATION':
+                snapshot.objective.task_phase = "HANDOVER"
 
             if decision.tool == "complete_task" or decision.tool == "abort_task":
                 break

@@ -223,6 +223,21 @@ class VoiceNode:
         if self.on_estop_triggered_cb:
             self.on_estop_triggered_cb(keyword)
 
+    def _check_estop_in_final(self, text: str) -> bool:
+        """Backstop: check ESTOP keywords on final Deepgram transcripts
+        in case the keyword_monitor (partial transcript) missed them."""
+        lowered = text.lower().strip()
+        words = [w.strip(".,!?;:'\"") for w in lowered.split()]
+        if not words:
+            return False
+        from acare_bringup.constants import ESTOP_KEYWORDS
+        for kw in ESTOP_KEYWORDS:
+            if kw in words:
+                if len(words) <= 2:
+                    self._on_estop(kw)
+                    return True
+        return False
+
     def _on_transcript(self, text: str) -> None:
         """
         Final, speech_final=True transcript from Deepgram.
@@ -230,6 +245,10 @@ class VoiceNode:
           normalise → alias_expand → multi-tool check → intent parse → callback
         """
         if not text or not text.strip():
+            return
+
+        # Backstop: final transcript ESTOP check before state check
+        if self._check_estop_in_final(text):
             return
 
         # ESTOP active — drop all transcripts until resume()

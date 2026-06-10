@@ -155,13 +155,17 @@ class IKSolver:
     # ------------------------------------------------------------------
     # Core IK
     # ------------------------------------------------------------------
-    def solve_with_status(self, xyz: Iterable[float], top_down: bool = True) -> IKResult:
+    def solve_with_status(self, xyz: Iterable[float], top_down: bool = True, approach_angle: float = 0.0) -> IKResult:
         """
         Solve IK for a target TCP position (metres) in the robot base frame.
 
         top_down=True orients the gripper pointing straight down (the normal
         grasp approach for tools lying on a tray). The wrist joints are set
         so the tool axis is vertical regardless of base rotation.
+
+        approach_angle is used when top_down=False to set the wrist yaw (J6)
+        for side approaches (e.g. SIDE_LEFT / SIDE_RIGHT). The angle is
+        provided in degrees and converted to radians internally.
 
         Returns an IKResult with joint angles (radians) and a reachable flag.
         Never raises.
@@ -240,7 +244,7 @@ class IKSolver:
         else:
             j5 = -(j2 + j3)
             j4 = 0.0
-            j6 = 0.0
+            j6 = math.radians(approach_angle)  # wrist yaw from approach rotation
 
         raw = [j1, j2, j3, j4, j5, j6]
 
