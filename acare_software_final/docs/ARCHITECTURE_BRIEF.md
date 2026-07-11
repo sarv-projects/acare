@@ -1,7 +1,7 @@
 # ACARE — Software Architecture Brief
 
 ## System Overview
-ACARE is a voice-controlled surgical assistant robot. 11 ROS2 packages, ~15,000 lines of Python. The arm doesn't move (hardware blockers remain), but the entire software stack is complete and demo-ready.
+ACARE is a voice-controlled surgical assistant robot. 11 ROS2 packages, ~18,000 lines of Python. The entire software stack is complete and demo-ready.
 
 ---
 
