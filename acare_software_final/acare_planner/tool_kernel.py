@@ -16,6 +16,16 @@ VALID_POSITIONS = {'PREGRASP', 'GRASP_POINT', 'FACE_HEIGHT', 'PRESENTATION', 'SA
 VALID_APPROACHES = {'TOP_DOWN', 'SIDE_LEFT', 'SIDE_RIGHT'}
 VALID_FIRMNESS = {'LIGHT', 'NORMAL', 'FIRM'}
 
+# S5: Per-phase velocity scales — smoother, more natural demo motions
+VELOCITY_PER_POSITION = {
+    'PREGRASP':    0.8,   # approach fast
+    'GRASP_POINT': 0.5,   # descend slow and controlled
+    'FACE_HEIGHT': 0.6,   # lift to face level
+    'PRESENTATION': 0.6,  # present tool to user
+    'SAFE_DROP':   0.3,   # cautious safe deposit
+    'REST':        0.5,   # return to rest
+}
+
 class ToolKernel:
     def __init__(self, node, snapshot: TaskSnapshot, hw_translator: HWTranslator):
         self.node = node
@@ -49,15 +59,20 @@ class ToolKernel:
             return False, "ALREADY_TRIED", f"Action {action_sig} was already tried and failed this task."
         
         # --- L0: Safety Kernel Gate ---
-        # Get target_xyz if applicable
+        # Get target_xyz if applicable — only for grasp-related positions where
+        # we know the actual target. Non-grasp positions (FACE_HEIGHT, PRESENTATION,
+        # SAFE_DROP, REST) are computed later by hw_translator inside _tool_arm_move.
         target_xyz = None
-        if tool_name == 'arm_move' and self.node.context.grasp_point:
-            target_xyz = self.node.context.grasp_point
+        if tool_name == 'arm_move':
+            pos = params.get('position', '')
+            if pos in ('GRASP_POINT', 'PREGRASP') and self.node.context.grasp_point:
+                target_xyz = self.node.context.grasp_point
         # We don't have IK result at schema validation time, so skip L3 here
         result = self.node.safety_kernel.evaluate(
             estop_active=self.node._estop_active.is_set(),
             tool_name=tool_name,
             target_xyz=target_xyz,
+            ik_reachable=None,  # not available at schema-validation time; checked in _tool_arm_move
             calls_used=self.snapshot.budget.calls_used,
             gripper_force=self.node.world.gripper_force,
         )
@@ -111,6 +126,9 @@ class ToolKernel:
             return False, "TIMEOUT", "Vision scan timed out."
         if self.node._estop_active.is_set():
             return False, "ESTOP", "ESTOP activated during vision scan."
+        # M10: Reject stale results from a previous task's search.
+        if self.node._completed_vision_seq != self.node._vision_search_seq:
+            return False, "STALE", "Vision result from a previous search task."
             
         res = self.node._last_vision_result
         if not res or not res.found:
@@ -140,18 +158,31 @@ class ToolKernel:
             if not (w['xmin'] <= target_xyz[0] <= w['xmax'] and w['ymin'] <= target_xyz[1] <= w['ymax'] and w['zmin'] <= target_xyz[2] <= w['zmax']):
                 return False, "SAFETY_REJECTED", "Target out of workspace bounds."
 
+        # C5: Capture expected motion sequence BEFORE draining so we can
+        # detect stale feedback from a previous command that arrives between
+        # drain and publish.  _send_arm_move will increment _motion_seq so
+        # expected_seq == self.node._motion_seq after the call.
+        expected_seq = self.node._motion_seq + 1
+
         # clear motion queue before sending
         while not self.node._motion_queue.empty():
             try:
                 self.node._motion_queue.get_nowait()
             except queue.Empty:
                 break
-            
-        if not self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2], self.node._last_approach_rotation):
+
+        if not self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2],
+                                        self.node._last_approach_rotation,
+                                        velocity_scale=VELOCITY_PER_POSITION.get(position, 0.5)):
             return False, "UNREACHABLE", "IK failed to reach position."
-            
+
+        # Wait for motion feedback — discard stale results from previous
+        # commands whose seq does not match the current expected_seq.
         try:
-            success = self.node._motion_queue.get(timeout=15.0)
+            seq, success = self.node._motion_queue.get(timeout=15.0)
+            while seq != expected_seq:
+                # Stale result from a previous arm command — discard and retry
+                seq, success = self.node._motion_queue.get(timeout=5.0)
             if not success:
                 return False, "EXECUTION_FAILED", "Motion feedback reported failure."
         except queue.Empty:
@@ -171,27 +202,38 @@ class ToolKernel:
     def _tool_gripper_close(self, firmness: str) -> Tuple[bool, str, str]:
         force = self.hw.translate_firmness(firmness)
         self.node._send_gripper_command("GRASP", force)
-        
+
         # Loop with short sleeps to allow ESTOP break-out.
         # In sim/demo mode the embedded interface never reports real force
-        # feedback (gripper_force stays 0.0) — accept closure after the wait.
+        # feedback (gripper_force stays near 0.0) — accept closure after the wait.
         for _ in range(4):
             time.sleep(0.5)
             if self.node._estop_active.is_set():
                 return False, "ESTOP", "ESTOP activated."
+            # C10: Sensor noise margin — force readings may jitter around the
+            # threshold on real hardware; accept >= 0.5 as firmly established.
             if self.node.world.gripper_force >= 0.5:
                 self.node.world.arm_holding = True
                 from acare_msgs.msg import StateTransition
                 self.node.transition_pub.publish(StateTransition(target_state="HOLDING"))
                 return True, "SUCCESS", "Grip established firmly."
-            
-        # After 2s: if no force feedback arrived at all, assume sim/demo mode
-        if self.node.world.gripper_force == 0.0:
-            self.node.world.arm_holding = True
-            from acare_msgs.msg import StateTransition
-            self.node.transition_pub.publish(StateTransition(target_state="HOLDING"))
-            return True, "SUCCESS", "Grip established (sim/demo mode)."
-            
+
+        # After 2s: if no force feedback arrived at all, assume sim/demo mode.
+        # Use abs() to handle floating-point near-zero (e.g. 1e-8) that would
+        # fail an exact == 0.0 comparison on some platforms.
+        if abs(self.node.world.gripper_force) < 0.1:
+            if self.node._simulation_mode:
+                # Simulation / demo: no real force feedback expected — accept
+                self.node.world.arm_holding = True
+                from acare_msgs.msg import StateTransition
+                self.node.transition_pub.publish(StateTransition(target_state="HOLDING"))
+                return True, "SUCCESS", "Grip established (sim/demo mode)."
+            else:
+                # Hardware mode: force near zero means the gripper closed on
+                # nothing — treat as slip / failure, not success.
+                self.node._publish_vision_penalty()
+                return False, "SLIP_DETECTED", "Gripper closed but force is near zero on hardware — object slipped."
+
         self.node._publish_vision_penalty()
         return False, "SLIP_DETECTED", "Gripper closed but force is low, object slipped."
 
@@ -251,9 +293,11 @@ class ToolKernel:
                 pass
             try:
                 target_xyz = self.hw.translate_position('SAFE_DROP', grasp_point, user_z_offset)
-                if self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2], self.node._last_approach_rotation):
+                if self.node._send_arm_move(target_xyz[0], target_xyz[1], target_xyz[2],
+                                            self.node._last_approach_rotation,
+                                            velocity_scale=VELOCITY_PER_POSITION.get('SAFE_DROP', 0.3)):
                     try:
-                        self.node._motion_queue.get(timeout=5.0)
+                        self.node._motion_queue.get(timeout=5.0)  # (seq, success) — discard, we're aborting
                     except queue.Empty:
                         self.node.get_logger().warn('Abort: safe-drop arm motion timed out, opening gripper in place.')
             except Exception:

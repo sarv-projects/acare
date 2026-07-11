@@ -87,6 +87,9 @@ class FakeDetector:
 
         # --- Signal 2: Depth variance ---
         depth_roi = depth_frame[y1:y2, x1:x2].astype(np.float32)
+        # H9: Guard against NaN/Inf depth values
+        if not np.all(np.isfinite(depth_roi)):
+            return False
         depth_roi_m = depth_roi / 1000.0   # mm → metres
         valid_depth = depth_roi_m[depth_roi_m > 0]
 

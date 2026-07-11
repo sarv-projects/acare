@@ -1,0 +1,20 @@
+[Unit]
+Description=ACARE Kiosk UI
+After=systemd-user-sessions.service network.target acare-dashboard.service
+Conflicts=getty@tty1.service
+
+[Service]
+User=acare
+Environment=DISPLAY=:0
+# Launch xinit -> chromium in kiosk mode. Set window size to match physical LCD (800x480)
+# We disable DPMS (screen blanking) and hide the cursor for kiosk mode.
+ExecStart=/usr/bin/xinit /usr/bin/chromium-browser --kiosk --no-sandbox --disable-infobars --window-position=0,0 --window-size=800,480 --force-device-scale-factor=1.0 http://localhost:8000 -- :0 -s 0 dpms -keeptty vt1
+Restart=always
+RestartSec=5
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+[Install]
+WantedBy=graphical.target

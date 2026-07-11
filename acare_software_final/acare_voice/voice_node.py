@@ -180,6 +180,11 @@ class VoiceNode:
 
         if self.state_mgr.state == SystemState.LISTENING:
             self.state_mgr.transition(SystemState.PROCESSING, "VAD speech detected")
+            # H5: Start processing watchdog — if no transcript arrives within
+            # 10s (ASR failure / network drop), return to LISTENING.
+            self._processing_timer = threading.Timer(10.0, self._processing_timeout)
+            self._processing_timer.daemon = True
+            self._processing_timer.start()
 
     def _on_estop(self, keyword: str) -> None:
         self.state_mgr.transition(SystemState.ESTOP, f"Keyword: {keyword}")
@@ -192,7 +197,18 @@ class VoiceNode:
         if self.state_mgr.state == SystemState.ESTOP:
             self.on_resume()
 
+    def _processing_timeout(self):
+        """Watchdog: if stuck in PROCESSING for 10s without transcript, reset."""
+        if self.state_mgr.state == SystemState.PROCESSING:
+            print("[VoiceNode] Processing timeout — ASR may have failed. Returning to LISTENING.")
+            self.state_mgr.transition(SystemState.LISTENING, "Processing timeout")
+
     def _on_transcript(self, text: str) -> None:
+        # Cancel processing watchdog (transcript arrived)
+        if hasattr(self, '_processing_timer') and self._processing_timer:
+            self._processing_timer.cancel()
+            self._processing_timer = None
+
         if not text or not text.strip():
             return
 

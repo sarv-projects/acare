@@ -1,1 +1,0 @@
-/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_typesupport_introspection_c/acare_msgs/msg/detail/validated_intent__rosidl_typesupport_introspection_c.h

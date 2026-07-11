@@ -30,6 +30,7 @@
 #   /hand_status    (HandStatus)    — during HANDOVER state only
 #   /log_event      (LogEvent)      — search events
 
+import queue
 import threading
 import time
 from pathlib import Path
@@ -38,7 +39,12 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
-from rclpy.parameter_client import AsyncParameterClient
+
+# AsyncParameterClient import — handles ROS2 Jazzy differences
+try:
+    from rclpy.parameter_client import AsyncParameterClient
+except (ImportError, ModuleNotFoundError):
+    from rclpy.parameter import AsyncParameterClient
 from acare_bringup.paths import MODEL_DIR
 from acare_bringup.qos_profiles import (
     TOPIC_VISION,
@@ -117,6 +123,10 @@ class VisionNode(Node):
             self.create_subscription(
                 MotionFeedback, '/motion_feedback',
                 self._on_motion_feedback, TOPIC_SENSOR)
+
+        # Thread-safe result publishing queue (drained by _publish_results timer)
+        self._result_queue = queue.Queue(maxsize=100)
+        self.create_timer(0.1, self._publish_results)
 
         # Publish LOADING immediately so planner knows we're starting
         self._publish_status('LOADING')
@@ -287,26 +297,6 @@ class VisionNode(Node):
 
         self.camera = _CameraProxy()
 
-    def _is_demo_mode(self) -> bool:
-        """Returns True if demo_mode: true is set in system.yaml."""
-        try:
-            import yaml
-            from acare_bringup.paths import SYSTEM_YAML
-            with open(SYSTEM_YAML, 'r', encoding='utf-8') as f:
-                cfg = yaml.safe_load(f) or {}
-            return bool(cfg.get('demo_mode', False))
-        except Exception:
-            return False
-
-    def _camera_is_streaming(self) -> bool:
-        """Returns True if camera frames have arrived in the last 3 seconds."""
-        if not hasattr(self, '_last_rgb_at') or not hasattr(self, '_cam_lock'):
-            return False
-        with self._cam_lock:
-            if not self._last_rgb_at:
-                return False
-            return (time.monotonic() - self._last_rgb_at) < 3.0
-
     def _camera_health_tick(self):
         now = time.monotonic()
         with self._cam_lock:
@@ -467,60 +457,43 @@ class VisionNode(Node):
             self.mode = 'SEARCH'
 
         tool_name = msg.tool
-        self.get_logger().info(f'Vision: starting NBV search for {tool_name}')
+
+        # Extract priority_zones — pass first non-AUTO zone, or None
+        zones = getattr(msg, 'priority_zones', None)
+        zone = None
+        if zones and len(zones) > 0:
+            first = zones[0]
+            if first.upper() != 'AUTO':
+                zone = first
+
+        self.get_logger().info(
+            f'Vision: starting NBV search for {tool_name}'
+            + (f' zone={zone}' if zone else ''))
 
         threading.Thread(
             target=self._run_search,
-            args=(tool_name,),
+            args=(tool_name, zone),
             daemon=True
         ).start()
 
-    def _run_search(self, tool_name: str):
+    def _run_search(self, tool_name: str, zone: str | None = None):
         """
-        Runs NBV search and publishes the result.
-        Called in a background thread.
+        Runs NBV search and enqueues the result for thread-safe publishing.
 
-        In simulation/demo mode (demo_mode: true in system.yaml), if no real
-        camera frames are arriving, returns a scripted detection so the full
-        pipeline can be demonstrated without real hardware. The arm will move
-        to a fixed pre-grasp position on the tray.
+        Called in a background thread.  The result is placed onto a
+        thread-safe queue and published from the ROS2 executor thread via
+        the _publish_results() timer callback.
         """
         start_time = time.monotonic()
 
-        # --- Simulation bypass ---
-        # If demo_mode is enabled AND no camera is streaming (Gazebo sim or
-        # bench test), return a scripted result so the planner can complete
-        # the full task without real object detection.
-        if self._is_demo_mode() and not self._camera_is_streaming():
-            self.get_logger().info(
-                f'Vision: DEMO MODE — returning scripted detection for {tool_name}')
-            from acare_planner.tool_registry import SCRIPTED_POSITIONS
-            tool_lower = tool_name.lower()
-            if tool_lower not in SCRIPTED_POSITIONS:
-                self.get_logger().warning(
-                    f'Vision: DEMO MODE — no scripted position defined for {tool_name}')
-                with self._mode_lock:
-                    self.mode = 'IDLE'
-                return
-            pos = SCRIPTED_POSITIONS[tool_lower]
-            result_dict = {
-                'found': True,
-                'tool': tool_name,
-                'x': pos[0], 'y': pos[1], 'z': pos[2],
-                'confidence': 0.95,
-                'zone': 'zone_B',
-                'candidates': [],
-            }
-            search_ms = int((time.monotonic() - start_time) * 1000)
-        else:
-            try:
-                result_dict = self.nbv.search(tool_name, self.camera)
-            except Exception as e:
-                self.get_logger().error(f'NBV search error: {e}')
-                result_dict = {'found': False, 'tool': tool_name,
-                               'x': 0.0, 'y': 0.0, 'z': 0.0,
-                               'confidence': 0.0, 'zone': '', 'candidates': []}
-            search_ms = int((time.monotonic() - start_time) * 1000)
+        try:
+            result_dict = self.nbv.search(tool_name, self.camera, zone=zone)
+        except Exception as e:
+            self.get_logger().error(f'NBV search error: {e}')
+            result_dict = {'found': False, 'tool': tool_name,
+                           'x': 0.0, 'y': 0.0, 'z': 0.0,
+                           'confidence': 0.0, 'zone': '', 'candidates': []}
+        search_ms = int((time.monotonic() - start_time) * 1000)
 
         self.get_logger().info(
             f'Vision: search complete — found={result_dict["found"]} '
@@ -528,7 +501,27 @@ class VisionNode(Node):
             f'time={search_ms}ms'
         )
 
-        if ACARE_MSGS_AVAILABLE and self.result_pub:
+        # Enqueue result for publishing from the executor thread
+        self._result_queue.put((result_dict, search_ms, tool_name))
+
+        with self._mode_lock:
+            self.mode = 'IDLE'
+
+    def _publish_results(self):
+        """
+        Timer callback (0.1s) that drains the result queue and publishes
+        from the ROS2 executor thread.  This avoids publishing from a
+        non-Executor daemon thread (ROS2 constraint).
+        """
+        while not self._result_queue.empty():
+            try:
+                result_dict, search_ms, tool_name = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if not (ACARE_MSGS_AVAILABLE and self.result_pub):
+                continue
+
             msg = VisionResult()
             msg.found      = result_dict['found']
             msg.tool       = result_dict['tool']
@@ -548,9 +541,6 @@ class VisionNode(Node):
                 log_msg.vision_search_ms = search_ms
                 log_msg.timestamp = int(time.time())
                 self.log_pub.publish(log_msg)
-
-        with self._mode_lock:
-            self.mode = 'IDLE'
 
     # -------------------------------------------------------------------------
     # Arm command interface (called by NBVSearch)

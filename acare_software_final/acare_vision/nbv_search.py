@@ -20,9 +20,11 @@
 
 import yaml
 import time
+import math
 import numpy as np
 from pathlib import Path
 import json
+import cv2
 
 from .fake_detector import FakeDetector
 from .localiser import Localiser
@@ -246,12 +248,14 @@ class NBVSearch:
     # Search
     # -------------------------------------------------------------------------
 
-    def search(self, tool_name: str, camera) -> dict:
+    def search(self, tool_name: str, camera, zone: str | None = None) -> dict:
         """
         Searches all viewpoints for the requested tool.
 
         tool_name — canonical tool name from intent (e.g. 'scissors', 'oximeter')
         camera    — HP60CCameraNode instance
+        zone      — optional zone filter; if provided and not 'AUTO'/None,
+                    only viewpoints in that zone are considered
 
         Returns dict:
             {'found': bool, 'tool': str, 'x': float, 'y': float, 'z': float,
@@ -269,7 +273,17 @@ class NBVSearch:
                     'NBV search: no viewpoints defined. Run admin.py calibrate Step 5.')
             return result
 
-        sorted_vps = self._sort_zones(model_class)
+        # Zone filter: only consider viewpoints matching the requested zone
+        candidates = self.viewpoints
+        if zone and zone.upper() != 'AUTO':
+            candidates = [vp for vp in self.viewpoints if vp.get('zone') == zone]
+            if not candidates:
+                if self.node:
+                    self.node.get_logger().warn(
+                        f'NBV search: no viewpoints found for zone={zone}; falling back to all viewpoints.')
+                candidates = self.viewpoints
+
+        sorted_vps = self._sort_zones(model_class, candidates)
 
         for vp in sorted_vps:
             zone = vp['zone']
@@ -290,8 +304,6 @@ class NBVSearch:
             # Determine lighting mode from the reference frame
             low_light_mode = False
             if rgb_frames and rgb_frames[0] is not None:
-                import cv2
-                import numpy as np
                 gray = cv2.cvtColor(rgb_frames[0], cv2.COLOR_BGR2GRAY)
                 low_light_mode = float(np.mean(gray)) < 80   # spec Section XI threshold
 
@@ -334,8 +346,15 @@ class NBVSearch:
                     continue
                 d['position_3d'] = pos
                 d['depth_support'] = self._depth_support_score(ref_depth, d['bbox'])
+                # H9: Guard against NaN/Inf confidence values
+                try:
+                    conf = float(d['confidence'])
+                    if not math.isfinite(conf):
+                        conf = 0.0
+                except (TypeError, ValueError, OverflowError):
+                    conf = 0.0
                 d['rank_score'] = (
-                    float(d['confidence'])
+                    conf
                     + 0.10 * float(d['depth_support'])
                     + (0.02 if d.get('variant') == 'enhanced' and d.get('scene_low_light') else 0.0)
                 )
@@ -387,10 +406,11 @@ class NBVSearch:
                 self.probability_map[zone][t] = min(max(v, 0.05), 0.90)
             self.save_map()
 
-    def _sort_zones(self, model_class: str) -> list:
+    def _sort_zones(self, model_class: str, viewpoints: list | None = None) -> list:
         """Sort viewpoints by P(tool|zone), highest probability first."""
         scored = []
-        for vp in self.viewpoints:
+        targets = self.viewpoints if viewpoints is None else viewpoints
+        for vp in targets:
             zone = vp['zone']
             prob = self.probability_map.get(zone, {}).get(model_class, 0.05)
             scored.append((prob, vp))
@@ -471,7 +491,8 @@ class NBVSearch:
                             'capturing from current pose instead.'
                         )
                 else:
-                    time.sleep(min(0.05, self.capture_settle_s))
+                    settle = getattr(self, 'capture_settle_s', 0.3)
+                    time.sleep(settle)
 
                 rgb, depth = self._capture_frame_pair(camera)
                 if rgb is not None and depth is not None:
@@ -552,6 +573,12 @@ class NBVSearch:
         for t in self.probability_map[zone]:
             v = self.probability_map[zone][t]
             self.probability_map[zone][t] = min(max(v, 0.05), 0.90)
+
+        # Re-normalise after clamping to preserve probability distribution
+        total = sum(self.probability_map[zone].values())
+        if total > 0:
+            for t in self.probability_map[zone]:
+                self.probability_map[zone][t] /= total
 
     def _in_workspace(self, pos: tuple) -> bool:
         """Returns True if (x, y, z) is within the defined robot workspace."""

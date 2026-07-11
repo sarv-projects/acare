@@ -85,6 +85,10 @@ class SafetyKernel:
             return KernelResult(False, "L6_GRIPPER_ANOMALY",
                                 f"Gripper force {gripper_force:.1f}N exceeds anomaly threshold")
 
+        # M7: Reset failure counter on successful evaluation so it doesn't
+        # bleed across tasks (crash mid-task leaves stale counter otherwise).
+        if self._consecutive_failures > 0:
+            self._consecutive_failures = 0
         return KernelResult(True, "PASS", "All layers passed")
 
 

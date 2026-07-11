@@ -10,8 +10,8 @@ robot:
     ymax:  0.60
     zmin:  0.0
     zmax:  0.75
-  safe_drop_zone:  {x: 0.0, y: 0.35, z: 0.05}   # [FILL_AFTER_ASSEMBLY]
-  handover_zone:   {x: 0.0, y: 0.40, z: 0.10}   # [FILL_AFTER_ASSEMBLY]
+  safe_drop_zone:  {x: 0.0, y: 0.35, z: 0.05}   # ~0.35m forward from base at tray height — verify after assembly
+  handover_zone:   {x: 0.0, y: 0.40, z: 0.10}   # ~0.40m forward, just above drop — adjust after assembly
   handover_height_adjustment_m: 0.05
   kiosk_return_to_rest_seconds: 12
 
@@ -26,12 +26,12 @@ arm:
   # Gearbox ratios confirmed: Joint 2 (Shoulder) = 22:1, Joint 3 (Elbow) = 15:1
   # Joints 4,5,6 ratios: [FILL_AFTER_ASSEMBLY]
   dh_params:
-    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 1 [FILL_AFTER_ASSEMBLY]
-    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 2 [FILL_AFTER_ASSEMBLY]
-    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 3 [FILL_AFTER_ASSEMBLY]
-    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 4 [FILL_AFTER_ASSEMBLY]
-    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 5 [FILL_AFTER_ASSEMBLY]
-    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 6 [FILL_AFTER_ASSEMBLY]
+    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 1 — decorative placeholder
+    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 2 — decorative placeholder
+    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 3 — decorative placeholder
+    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 4 — decorative placeholder
+    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 5 — decorative placeholder
+    - {a: 0.0, alpha: 0.0, d: 0.0, theta_offset: 0.0}  # Joint 6 — decorative placeholder
   # Joint limits in RADIANS. Confirmed from hardware team:
   #   J1 base [-180,180]  J2 shoulder [-135,135]  J3 elbow [-120,120]
   #   J4 wrist_1 [-180,180]  J5 wrist_2 [-180,180]  J6 wrist_3 [-180,180]
@@ -74,6 +74,10 @@ camera:
   # calibration, update this with the real PnP result so positions are in the
   # robot base frame and arm movements work correctly.
   T_robot_camera: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+  # Wrist-mounted (flange→camera) transform — CAD estimate.
+  # Camera mounted ~5cm forward along flange z, pitched −90° around x
+  # to look at workspace. Update with PnP calibration result after assembly.
+  T_flange_camera: [1,0,0,0, 0,0,1,0, 0,-1,0,0.05, 0,0,0,1]
 
 vision:
   model_path: 'models/acare_v26.onnx'
@@ -85,7 +89,7 @@ vision:
   low_light_gamma_dark: 1.55
   low_light_gamma_very_dark: 1.85
   low_light_enable_unsharp_mask: true
-  input_size: 320
+  input_size: 640
   capture_settle_ms: 120
   # Small wrist micro-offsets around each search viewpoint, in radians.
   # Used to capture 3 frames with slightly different camera angles.
@@ -127,9 +131,9 @@ auth:
   enrol_voice_samples: 3
   enrol_face_frames:   10
 
-demo_mode: true
 
 planner:
+  task_timeout_s: 180
   tool_budget_per_task: 20
   llm_timeout_s: 4.0
   base_grasp_force_n: 3.0

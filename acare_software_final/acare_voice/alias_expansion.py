@@ -67,7 +67,6 @@ VALID_TOOLS = ["cream", "scissors", "forceps", "thermometer", "oximeter", "plast
 # Ambiguous aliases that could map to multiple tools
 # These need user confirmation
 AMBIGUOUS_ALIASES = {
-    "cutting tool": ["scissors", "forceps"],
     "long tool": ["forceps"],
 }
 

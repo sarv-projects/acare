@@ -4,6 +4,7 @@
 # Enforces the global robot state machine.
 # All state transitions go through this node — no node changes state directly.
 # Publishes /robot_state after every valid transition.
+# Subscribes to /emergency_stop (EmergencySignal) for supervisor ESTOP routing.
 #
 # Valid states: OFFLINE, LOGGED_OUT, STANDBY, LISTENING, PROCESSING,
 #               EXECUTING, HOLDING, HANDOVER, ESTOP, ERROR
@@ -16,10 +17,10 @@ import threading
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from acare_bringup.qos_profiles import TOPIC_STATE, TOPIC_VOICE_PIPELINE, TOPIC_TTS
+from acare_bringup.qos_profiles import TOPIC_STATE, TOPIC_VOICE_PIPELINE, TOPIC_TTS, TOPIC_ESTOP
 
 try:
-    from acare_msgs.msg import RobotState, StateTransition, SafetyAlert, AuthResult
+    from acare_msgs.msg import RobotState, StateTransition, SafetyAlert, AuthResult, EmergencySignal
     MSGS_OK = True
 except ImportError:
     MSGS_OK = False
@@ -67,6 +68,8 @@ class StateManager(Node):
                                      self._on_safety_alert, TOPIC_STATE)
             self.create_subscription(AuthResult, '/auth_result',
                                      self._on_auth_result, TOPIC_VOICE_PIPELINE)
+            self.create_subscription(EmergencySignal, '/emergency_stop',
+                                     self._on_emergency_stop, TOPIC_ESTOP)
         else:
             self.get_logger().error('acare_msgs not available — state_manager cannot run')
             return
@@ -76,6 +79,7 @@ class StateManager(Node):
 
         # Boot into LOGGED_OUT
         self._transition('LOGGED_OUT')
+        self._publish_current_state()
         self.get_logger().info(
             f'State manager ready — inactivity={INACTIVITY_TIMEOUT_S}s '
             f'hard_ttl={self._hard_ttl_s}s'
@@ -97,10 +101,9 @@ class StateManager(Node):
             self._tts_pub.publish(String(data=text))
 
     def _on_transition(self, msg: 'StateTransition'):
+        target = msg.target_state
+        reason = msg.reason if hasattr(msg, 'reason') else ''
         with self._lock:
-            target = msg.target_state
-            reason = msg.reason if hasattr(msg, 'reason') else ''
-
             # Logout guard
             if target == 'LOGGED_OUT' and self.state in NO_LOGOUT_FROM:
                 self.get_logger().warn(
@@ -108,11 +111,20 @@ class StateManager(Node):
                 return
 
             self._transition(target, reason)
+        self._publish_current_state()
 
     def _on_safety_alert(self, msg: 'SafetyAlert'):
-        if msg.severity == 'ESTOP':
-            with self._lock:
+        with self._lock:
+            if msg.severity == 'ESTOP':
                 self._transition('ESTOP', f'Safety: {msg.source} — {msg.reason}')
+            elif msg.severity == 'OK' and self.state == 'ESTOP':
+                self._transition('STANDBY', f'Safety cleared: {msg.source} — {msg.reason}')
+        self._publish_current_state()
+
+    def _on_emergency_stop(self, msg: 'EmergencySignal'):
+        with self._lock:
+            self._transition('ESTOP', f'Emergency: {msg.source} — {msg.reason}')
+        self._publish_current_state()
 
     def _on_auth_result(self, msg: 'AuthResult'):
         with self._lock:
@@ -121,19 +133,20 @@ class StateManager(Node):
                 if self.state == 'LOGGED_OUT':
                     self._transition('STANDBY', f'auth:{msg.user_id}')
                     self._start_hard_ttl()   # spec Section VII: 2-hour hard TTL starts at login
-                else:
-                    self._publish_current_state()
+        self._publish_current_state()
 
     def _publish_current_state(self):
         msg = RobotState()
-        msg.state = self.state
-        msg.active_user_id = self.active_user_id
+        with self._lock:
+            msg.state = self.state
+            msg.active_user_id = self.active_user_id
         self.state_pub.publish(msg)
 
     def _transition(self, target: str, reason: str = ''):
         """
         Performs a state transition if valid.
-        Publishes /robot_state after every successful transition.
+        Caller is responsible for publishing via _publish_current_state()
+        after releasing self._lock.
         Resets inactivity timer when entering STANDBY.
         """
         # ESTOP and ERROR are always reachable from ANY state — safety overrides
@@ -153,8 +166,6 @@ class StateManager(Node):
         if target == 'LOGGED_OUT':
             self.active_user_id = ''
             self._cancel_hard_ttl()   # cancel hard TTL on any logout
-
-        self._publish_current_state()
 
         self.get_logger().info(f'State: {prev} → {target}' +
                                (f' [{reason}]' if reason else ''))
@@ -192,12 +203,14 @@ class StateManager(Node):
             self._say(f'Session timeout. Logging out.')
             self._cancel_hard_ttl()
             self._transition('LOGGED_OUT', 'inactivity_timeout')
+        self._publish_current_state()
 
     def _auto_logout_hard_ttl(self):
         with self._lock:
             self.get_logger().info('Session hard TTL expired — auto-logout')
             self._say('Session time limit reached. Logging out.')
             self._transition('LOGGED_OUT', 'hard_ttl_expired')
+        self._publish_current_state()
 
     def destroy_node(self):
         if self._inactivity_timer:

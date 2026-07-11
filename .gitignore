@@ -1,6 +1,7 @@
 # Secrets
 .env
 *.env
+.env.bak
 
 # Python
 __pycache__/
@@ -28,7 +29,7 @@ build/
 install/
 log/
 
-# Models (large binary files)
+# Models (large binary files - tracked via LFS or manual download)
 *.onnx
 *.pt
 *.pth
@@ -36,3 +37,6 @@ log/
 # Archives
 *.tar.gz
 *.zip
+
+# Media (large video files - not tracked in git)
+docs/media/*.mp4

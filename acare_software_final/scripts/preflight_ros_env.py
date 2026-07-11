@@ -21,6 +21,7 @@ REQUIRED_MODULES = [
     "onnxruntime",
     "cv2",
     "cryptography",
+    "spidev",
 ]
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_YAML = ROOT / "acare_bringup" / "config" / "system.yaml"

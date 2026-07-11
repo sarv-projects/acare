@@ -31,7 +31,7 @@ class Budget(BaseModel):
 
 class UserPrior(BaseModel):
     preferred_zone: Optional[str] = None
-    handover_z_offset: Optional[str] = None
+    handover_z_offset: Optional[float] = None   # G3: fixed from str to float
 
 class TaskSnapshot(BaseModel):
     objective: TaskObjective = Field(default_factory=TaskObjective)

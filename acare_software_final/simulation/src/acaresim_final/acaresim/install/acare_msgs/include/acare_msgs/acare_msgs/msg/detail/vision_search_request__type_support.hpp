@@ -1,1 +1,0 @@
-/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_generator_cpp/acare_msgs/msg/detail/vision_search_request__type_support.hpp

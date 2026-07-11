@@ -15,5 +15,9 @@ def validate_agentic_decision(raw_dict: dict) -> ToolCallSchema | None:
         return None
     try:
         return ToolCallSchema(**raw_dict)
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Agentic decision validation failed: {e} | raw keys: {list(raw_dict.keys()) if isinstance(raw_dict, dict) else type(raw_dict)}"
+        )
         return None

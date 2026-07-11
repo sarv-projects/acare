@@ -4,25 +4,47 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter_client import AsyncParameterClient
+# AsyncParameterClient import — handles ROS2 Jazzy differences
+_AsyncParameterClient = None
+_client_fallback = False
+try:
+    from rclpy.parameter_client import AsyncParameterClient as _AsyncParameterClient
+except (ImportError, ModuleNotFoundError):
+    try:
+        from rclpy.parameter import AsyncParameterClient as _AsyncParameterClient
+    except (ImportError, ModuleNotFoundError):
+        _client_fallback = True
+
+if _client_fallback:
+    _AsyncParameterClient = None
 
 
 class CameraProbe(Node):
     def __init__(self):
         super().__init__("camera_probe")
-        self.client = AsyncParameterClient(self, "/ascamera_hp60c")
+        if _AsyncParameterClient is None:
+            self.get_logger().error(
+                "AsyncParameterClient not available in this ROS2 distribution. "
+                "Cannot probe camera parameters."
+            )
+            self._client = None
+        else:
+            self._client = _AsyncParameterClient(self, "/ascamera_hp60c")
 
     def run(self) -> int:
+        if self._client is None:
+            return 2
+
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
-            if self.client.service_is_ready():
+            if self._client.service_is_ready():
                 break
             time.sleep(0.5)
-        if not self.client.service_is_ready():
+        if not self._client.service_is_ready():
             self.get_logger().error("ascamera parameter services not ready on /ascamera_hp60c")
             return 2
 
-        future = self.client.list_parameters([], depth=10)
+        future = self._client.list_parameters([], depth=10)
         rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
         result = future.result()
         if result is None:

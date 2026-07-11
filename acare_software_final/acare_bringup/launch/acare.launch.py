@@ -67,10 +67,9 @@ def generate_launch_description() -> LaunchDescription:
     core_nodes = TimerAction(
         period=1.0,
         actions=[
-            Node(package="acare_voice", executable="voice_node", output="screen"),
             Node(package="acare_safety", executable="safety_node", output="screen"),
-            Node(package="acare_logging", executable="log_node", output="screen"),
-            LogInfo(msg=["[acare] Layer 1: voice, safety, logging started"]),
+            Node(package="acare_logging", executable="log_node", output="screen", respawn=True, respawn_delay=2.0),
+            LogInfo(msg=["[acare] Layer 1: safety, logging started"]),
         ]
     )
 
@@ -87,7 +86,7 @@ def generate_launch_description() -> LaunchDescription:
     auth_node = TimerAction(
         period=2.0,
         actions=[
-            Node(package="acare_auth", executable="auth_node", output="screen"),
+            Node(package="acare_auth", executable="auth_node", output="screen", respawn=True, respawn_delay=2.0),
             LogInfo(msg=["[acare] auth_node started"]),
         ]
     )
@@ -96,18 +95,27 @@ def generate_launch_description() -> LaunchDescription:
     layer2_nodes = TimerAction(
         period=3.0,
         actions=[
-            Node(package="acare_dialogue", executable="dialogue_node", output="screen"),
+            Node(package="acare_dialogue", executable="dialogue_node", output="screen", respawn=True, respawn_delay=2.0),
             Node(package="acare_planner", executable="planner_node", output="screen"),
             Node(package="acare_embedded_interface", executable="interface_node", output="screen"),
             LogInfo(msg=["[acare] Layer 2: dialogue, planner, embedded_interface started"]),
         ]
     )
 
-    # --- Layer 3: Vision (t=5s — needs embedded interface) ---
+    # --- Layer 3: Voice (t=3.5s — needs auth + dialogue for intent routing) ---
+    voice_node = TimerAction(
+        period=3.5,
+        actions=[
+            Node(package="acare_voice", executable="voice_node", output="screen", respawn=True, respawn_delay=2.0),
+            LogInfo(msg=["[acare] voice_node started"]),
+        ]
+    )
+
+    # --- Layer 4: Vision (t=5s — needs embedded interface) ---
     vision_node = TimerAction(
         period=5.0,
         actions=[
-            Node(package="acare_vision", executable="vision_node", output="screen"),
+            Node(package="acare_vision", executable="vision_node", output="screen", respawn=True, respawn_delay=2.0),
             LogInfo(msg=["[acare] vision_node started"]),
         ]
     )
@@ -116,7 +124,7 @@ def generate_launch_description() -> LaunchDescription:
     admin_node = TimerAction(
         period=6.0,
         actions=[
-            Node(package="acare_admin", executable="admin_node", output="screen"),
+            Node(package="acare_admin", executable="admin_node", output="screen", respawn=True, respawn_delay=2.0),
             LogInfo(msg=["[acare] admin_node started"]),
         ]
     )
@@ -146,6 +154,7 @@ def generate_launch_description() -> LaunchDescription:
         state_manager,
         auth_node,
         layer2_nodes,
+        voice_node,
         vision_node,
         admin_node,
 

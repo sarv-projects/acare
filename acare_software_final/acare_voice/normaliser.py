@@ -2,6 +2,7 @@ import re
 from typing import Tuple, List
 
 from acare_bringup.constants import VALID_TOOLS
+from acare_planner.tool_registry import TOOL_REGISTRY
 
 FILLER_WORDS = [
     r"\bum\b", r"\buh\b", r"\ber\b", r"\behm\b",
@@ -14,18 +15,11 @@ POLITE_MARKERS = [
     r"\bwill you\b", r"\bcan we\b", r"\bcould we\b",
 ]
 
-SIMPLE_ALIASES = {
-    "pulse ox":       "oximeter",
-    "spo2":           "oximeter",
-    "band aid":       "plaster",
-    "band-aid":       "plaster",
-    "bandaid":        "plaster",
-    "adhesive strip": "plaster",
-    "lotion":         "cream",
-    "ointment":       "cream",
-    "topical":        "cream",
-    "temp probe":     "thermometer",
-}
+# Build alias map from tool_registry (single source of truth)
+SIMPLE_ALIASES = {}
+for canonical, entry in TOOL_REGISTRY.items():
+    for alias in entry["aliases"]:
+        SIMPLE_ALIASES[alias.lower()] = canonical
 
 
 def normalise(transcript: str) -> Tuple[str, bool, List[str]]:

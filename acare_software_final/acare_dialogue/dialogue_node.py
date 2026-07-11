@@ -77,6 +77,8 @@ class DialogueNode(Node):
         msg.transcript = transcript
         msg.tool = tool
         msg.confidence = float(confidence)
+        msg.modality = "voice"
+        msg.timeout_s = 10.0
         self.auth_req_pub.publish(msg)
 
     def _on_robot_state(self, msg: RobotState):
@@ -137,6 +139,33 @@ class DialogueNode(Node):
             self._publish_auth_request("login_candidate", transcript=text)
 
         fast = parse_fast_intent(text, self._memory.current_task.get("tool"))
+
+        # Bug #2 & #3: When a clarification is pending, intercept fast_intent results
+        # to resolve the clarification instead of starting a new command cycle.
+        if fast and self._memory.pending_clarification:
+            action = fast.get("action")
+            tool = fast.get("tool") or ""
+
+            # Bug #3: User confirms the ambiguous tool suggestion
+            if action == "confirm":
+                self._memory.pending_clarification = False
+                resolved = self._memory.last_ambiguous_tools[0] if self._memory.last_ambiguous_tools else ""
+                self._publish_intent(resolved, "fetch", 0.9)
+                return
+
+            # User rejects the ambiguous tool suggestion
+            if action == "reject":
+                self._memory.pending_clarification = False
+                self._memory.last_ambiguous_tools = []
+                self._say("Okay, let me know which tool you need.")
+                return
+
+            # Bug #2: User replied with a specific tool name during clarification
+            if tool and tool in self._memory.last_ambiguous_tools:
+                self._memory.pending_clarification = False
+                self._publish_intent(tool, "fetch", 0.9)
+                return
+
         if fast:
             if fast.get("type") == "multi_tool":
                 tools = fast.get("detected_tools", [])

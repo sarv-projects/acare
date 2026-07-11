@@ -119,6 +119,7 @@ class AuthNode(Node):
         self._last_voice_check_confidence = 0.0
         self._last_voice_check_at = 0.0
         self._enrol_condition = threading.Condition()
+        self._auth_lock = threading.RLock()
 
         if hasattr(self.voice_verifier, "THRESHOLD"):
             self.voice_verifier.THRESHOLD = float(auth_cfg.get("voice_similarity_threshold", self.voice_verifier.THRESHOLD))
@@ -126,7 +127,7 @@ class AuthNode(Node):
             self.face_verifier.THRESHOLD = float(auth_cfg.get("face_similarity_threshold", self.face_verifier.THRESHOLD))
 
         self.create_timer(0.5, self._passive_face_scan)
-        self.create_timer(0.5, self._handover_face_check)
+        self.create_timer(0.7, self._handover_face_check)
         self.create_timer(10.0, self._session_timeout_check)
         self._last_activity_at = time.monotonic()
         self._session_timeout_s = 300.0
@@ -201,8 +202,9 @@ class AuthNode(Node):
         self._active_user_id = ""
         self._active_user_name = ""
         self._active_user_role = ""
-        self._pending_login = None
-        self._pending_intent = None
+        with self._auth_lock:
+            self._pending_login = None
+            self._pending_intent = None
         self._voice_drift_failures = 0
         self._awaiting_reconfirm = False
         self._last_voice_check_ok = True
@@ -247,9 +249,7 @@ class AuthNode(Node):
         return best_user, best_sim
 
     def _passive_face_scan(self):
-        if self._robot_state != "LOGGED_OUT" or self._pending_login is not None or self._pending_enrolment is not None:
-            return
-        if self._active_user_id:
+        if self._robot_state != "LOGGED_OUT" or self._pending_enrolment is not None:
             return
 
         # Demo mode: don't require a camera frame. If at least one user is
@@ -272,35 +272,46 @@ class AuthNode(Node):
             if not users:
                 return
             user = users[-1]
-            self._pending_login = PendingLogin(
-                user_id=user.user_id,
-                name=user.name,
-                role=user.role,
-                face_confidence=0.99,
-                created_at=time.monotonic(),
-            )
-            self._last_prompted_user_id = user.user_id
+            with self._auth_lock:
+                if self._pending_login is not None or self._active_user_id:
+                    return
+                self._pending_login = PendingLogin(
+                    user_id=user.user_id,
+                    name=user.name,
+                    role=user.role,
+                    face_confidence=0.99,
+                    created_at=time.monotonic(),
+                )
+                self._last_prompted_user_id = user.user_id
             self._maybe_prompt(f"Welcome {user.name}. Say confirm to log in.")
             return
+
+        with self._auth_lock:
+            if self._pending_login is not None or self._active_user_id:
+                return
 
         if self._latest_rgb is None:
             return
 
         face_present = self.face_detector.face_present(self._latest_rgb) if self.face_detector.available else True
-        if not face_present and not self._demo_mode:
+        if not face_present:
             return
 
         user, sim = self._find_best_face_match()
         if user is None:
             return
-        self._pending_login = PendingLogin(
-            user_id=user.user_id,
-            name=user.name,
-            role=user.role,
-            face_confidence=sim,
-            created_at=time.monotonic(),
-        )
-        self._last_prompted_user_id = user.user_id
+
+        with self._auth_lock:
+            if self._pending_login is not None or self._active_user_id:
+                return
+            self._pending_login = PendingLogin(
+                user_id=user.user_id,
+                name=user.name,
+                role=user.role,
+                face_confidence=sim,
+                created_at=time.monotonic(),
+            )
+            self._last_prompted_user_id = user.user_id
         self._maybe_prompt(f"Welcome {user.name}. Say confirm to log in.")
 
     def _handover_face_check(self):
@@ -422,10 +433,11 @@ class AuthNode(Node):
         self._last_voice_check_confidence = sim
 
     def _resolve_pending_intent(self):
-        if self._pending_intent is None or not self._active_user_id:
-            return
-        pending = self._pending_intent
-        self._pending_intent = None
+        with self._auth_lock:
+            if self._pending_intent is None or not self._active_user_id:
+                return
+            pending = self._pending_intent
+            self._pending_intent = None
         self._publish_validated_intent(pending)
 
     def _on_rgb(self, msg: Image):
@@ -607,25 +619,28 @@ class AuthNode(Node):
         if action != "fetch":
             return
 
-        self._pending_intent = PendingIntent(tool=msg.tool, action=msg.action, confidence=msg.confidence)
-        if self._active_user_id:
-            recent_voice_window_s = 5.0
-            if (
-                self.voice_verifier.available
-                and (time.monotonic() - self._last_voice_check_at) <= recent_voice_window_s
-                and not self._last_voice_check_ok
-            ):
+        with self._auth_lock:
+            self._pending_intent = PendingIntent(tool=msg.tool, action=msg.action, confidence=msg.confidence)
+            if self._active_user_id:
+                recent_voice_window_s = 5.0
+                if (
+                    self.voice_verifier.available
+                    and (time.monotonic() - self._last_voice_check_at) <= recent_voice_window_s
+                    and not self._last_voice_check_ok
+                ):
+                    self._runtime_voice_check()
+                    self._publish_tts(f"Command not processed. Only {self._active_user_name} can issue commands.")
+                    return
                 self._runtime_voice_check()
-                self._publish_tts(f"Command not processed. Only {self._active_user_name} can issue commands.")
-                return
-            self._runtime_voice_check()
-            self._resolve_pending_intent()
-        elif self._pending_login is None:
-            self._maybe_prompt("Authentication required. Please face the camera and say confirm.")
+                self._resolve_pending_intent()
+            elif self._pending_login is None:
+                self._maybe_prompt("Authentication required. Please face the camera and say confirm.")
 
     def _on_auth_request(self, msg: AuthRequest):
-        if msg.request_type == "validate_intent" and msg.tool and self._pending_intent is None:
-            self._pending_intent = PendingIntent(tool=msg.tool, action="fetch", confidence=msg.confidence)
+        if msg.request_type == "validate_intent" and msg.tool:
+            with self._auth_lock:
+                if self._pending_intent is None:
+                    self._pending_intent = PendingIntent(tool=msg.tool, action="fetch", confidence=msg.confidence)
         # Handle face detection requests (from planner's detect_face tool).
         # The planner publishes AuthRequest(modality="face") and waits on
         # /auth_result.  Run a one-shot face verification on the latest RGB
@@ -681,8 +696,11 @@ class AuthNode(Node):
             self._logout()
             return
 
-        if text in {"confirm", "yes", "go ahead", "login", "log in"} and self._pending_login is not None:
-            pending = self._pending_login
+        if text in {"confirm", "yes", "go ahead", "login", "log in"}:
+            with self._auth_lock:
+                pending = self._pending_login
+                if pending is None:
+                    return
             user = self.store.get(pending.user_id)
             voice_conf = 0.99 if self._demo_mode else 0.0
             if user is not None and self.voice_verifier.available:
@@ -690,20 +708,21 @@ class AuthNode(Node):
                 if user.voice_emb is not None and audio_tensor is not None:
                     ok, voice_conf = self.voice_verifier.verify(audio_tensor, user.voice_emb)
                     if not ok:
-                        self._pending_login = pending
                         self._publish_tts("Identity not recognised. Please contact admin.")
                         return
                 elif user.voice_emb is not None and audio_tensor is None and not self._demo_mode:
-                    self._pending_login = pending
                     self._maybe_prompt("Please say confirm again.", cooldown_s=1.0)
                     return
-                elif audio_tensor is not None:
-                    self._pending_login = pending
+                elif audio_tensor is not None and not self._demo_mode:
                     self._publish_tts(
                         "Voice template not enrolled. Please contact admin to complete voice enrolment."
                     )
                     return
-            self._pending_login = None
+            with self._auth_lock:
+                if self._pending_login is not pending:
+                    # Another thread already consumed or replaced this login
+                    return
+                self._pending_login = None
             self._activate_session(pending.user_id, pending.name, pending.role)
             self._publish_auth(
                 True,

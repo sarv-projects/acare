@@ -3,6 +3,8 @@ import sqlite3
 import time
 from acare_bringup.paths import DB_PATH
 
+MAX_TASK_OUTCOMES = 1000   # G2: prune old entries to prevent unbounded growth
+
 class TaskMemory:
     def __init__(self):
         self.db_path = DB_PATH
@@ -46,7 +48,7 @@ class TaskMemory:
                 INSERT INTO task_outcomes (user_id, tool, zone_found, success, timestamp)
                 VALUES (?, ?, ?, ?, ?)
             """, (user_id, tool, zone_found, success, time.time()))
-            
+
             # If successful, update user prior for zone
             if success and zone_found:
                 cursor.execute("""
@@ -54,4 +56,15 @@ class TaskMemory:
                     VALUES (?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET preferred_zone=excluded.preferred_zone
                 """, (user_id, zone_found))
+
+            # G2: Prune old task outcomes to prevent unbounded growth
+            cursor.execute("SELECT COUNT(*) FROM task_outcomes")
+            count = cursor.fetchone()[0]
+            if count > MAX_TASK_OUTCOMES:
+                excess = count - MAX_TASK_OUTCOMES
+                cursor.execute("""
+                    DELETE FROM task_outcomes 
+                    WHERE id IN (SELECT id FROM task_outcomes ORDER BY timestamp ASC LIMIT ?)
+                """, (excess,))
+
             conn.commit()

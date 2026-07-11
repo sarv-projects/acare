@@ -7,7 +7,7 @@ import yaml
 
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from std_msgs.msg import String
 
 from acare_bringup.paths import SYSTEM_YAML
@@ -53,13 +53,25 @@ class PlannerNode(Node):
         self.voice_sync = VoiceSyncBridge()
         self.ik = IKSolver()
 
-        # ReentrantCallbackGroup allows timer and subscription callbacks to
-        # interleave safely within the ROS2 executor.  Paired with a
-        # MultiThreadedExecutor (see main()) this means the task-execution
-        # timer callback can block on threading.Event.wait() and
-        # queue.Queue.get() while subscription callbacks (vision_result,
-        # motion_feedback, etc.) run on other executor threads.
-        self._cb_group = ReentrantCallbackGroup()
+        # ── Callback groups ──────────────────────────────────────────
+        #
+        # Subscriptions use a MutuallyExclusiveCallbackGroup so that only
+        # one subscription callback runs at a time — this prevents races on
+        # shared state (_pending_intent, _last_vision_result, _motion_queue,
+        # etc.) without requiring a lock per variable.
+        #
+        # The task-execution timer uses a ReentrantCallbackGroup so that it
+        # can block on threading.Event.wait() / queue.Queue.get() inside
+        # tool_kernel.py while subscription callbacks fire on other executor
+        # threads (the node runs under MultiThreadedExecutor, see main()).
+        #
+        # RISK (documented): ReentrantCallbackGroup allows ANY callback to
+        # re-enter (i.e., a callback can fire while another is still running
+        # in the same group).  The timer callback is intentionally reentrant
+        # because it blocks; the subscription group is MutuallyExclusive to
+        # avoid accidental reentrancy on shared state.
+        self._cb_group_timer = ReentrantCallbackGroup()
+        self._cb_group_subs = MutuallyExclusiveCallbackGroup()
 
         # Publishers
         self.search_pub = self.create_publisher(VisionSearchRequest, "/vision_search_request", TOPIC_VISION)
@@ -71,33 +83,55 @@ class PlannerNode(Node):
         self.vision_penalty_pub = self.create_publisher(String, "/vision_penalty", TOPIC_VISION)
         self.auth_req_pub = self.create_publisher(AuthRequest, "/auth_request", TOPIC_STATE)
 
-        # Subscribers — all share the reentrant callback group so they can
-        # fire while the task-execution timer callback is running.
-        self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, TOPIC_VOICE_PIPELINE, callback_group=self._cb_group)
-        self.create_subscription(VisionResult, "/vision_result", self._on_vision_result, TOPIC_VISION, callback_group=self._cb_group)
-        self.create_subscription(MotionFeedback, "/motion_feedback", self._on_motion_feedback, TOPIC_SENSOR, callback_group=self._cb_group)
-        self.create_subscription(HandStatus, "/hand_status", self._on_hand_status, TOPIC_VISION, callback_group=self._cb_group)
-        self.create_subscription(SafetyAlert, "/safety_alert", self._on_safety_alert, TOPIC_STATE, callback_group=self._cb_group)
-        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE, callback_group=self._cb_group)
-        self.create_subscription(AuthResult, "/auth_result", self._on_auth_result, TOPIC_VOICE_PIPELINE, callback_group=self._cb_group)
-        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, TOPIC_VOICE_PIPELINE, callback_group=self._cb_group)
-        self.create_subscription(VisionStatus, "/vision_status", self._on_vision_status, TOPIC_VISION, callback_group=self._cb_group)
+        # Subscribers — all share the mutually-exclusive callback group so
+        # they cannot interleave with each other, preventing races on shared
+        # state.  The timer callback uses a separate reentrant group so it
+        # can block while subscriptions fire on other executor threads.
+        self.create_subscription(ValidatedIntent, "/validated_intent", self._on_validated_intent, TOPIC_VOICE_PIPELINE, callback_group=self._cb_group_subs)
+        self.create_subscription(VisionResult, "/vision_result", self._on_vision_result, TOPIC_VISION, callback_group=self._cb_group_subs)
+        self.create_subscription(MotionFeedback, "/motion_feedback", self._on_motion_feedback, TOPIC_SENSOR, callback_group=self._cb_group_subs)
+        self.create_subscription(HandStatus, "/hand_status", self._on_hand_status, TOPIC_VISION, callback_group=self._cb_group_subs)
+        self.create_subscription(SafetyAlert, "/safety_alert", self._on_safety_alert, TOPIC_STATE, callback_group=self._cb_group_subs)
+        self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE, callback_group=self._cb_group_subs)
+        self.create_subscription(AuthResult, "/auth_result", self._on_auth_result, TOPIC_VOICE_PIPELINE, callback_group=self._cb_group_subs)
+        self.create_subscription(Transcript, "/raw_transcript", self._on_transcript, TOPIC_VOICE_PIPELINE, callback_group=self._cb_group_subs)
+        self.create_subscription(VisionStatus, "/vision_status", self._on_vision_status, TOPIC_VISION, callback_group=self._cb_group_subs)
 
         # Task lifecycle — no threading.Lock or threading.Thread.
         # _pending_intent holds (tool, user_id, user_name) until the timer
         # picks it up.  _task_running prevents concurrent task execution.
         self._task_running = False
         self._pending_intent = None
-        self._task_timer = self.create_timer(0.1, self._task_timer_cb, callback_group=self._cb_group)
+        self._task_timer = self.create_timer(0.1, self._task_timer_cb, callback_group=self._cb_group_timer)
 
         # Synchronisation primitives used by tool_kernel.py (unchanged).
         # The tool kernel calls .wait() / .get() which block — this is safe
         # because subscription callbacks share the same ReentrantCallbackGroup
         # and a MultiThreadedExecutor provides the necessary concurrency.
         self._vision_event = threading.Event()
-        self._motion_queue = queue.Queue(maxsize=1)
+        self._motion_queue = queue.Queue(maxsize=10)
         self._auth_event = threading.Event()
         self._estop_active = threading.Event()
+
+        # C3: Lock protecting _pending_intent / _task_running — both are
+        # accessed from _on_validated_intent (subscriber callback) and
+        # _task_timer_cb (timer callback) on different executor threads.
+        self._intent_lock = threading.Lock()
+
+        # M10: Sequence counter to reject stale vision results from a
+        # previous task's search that arrives after _vision_event.clear().
+        self._vision_search_seq = 0
+        self._completed_vision_seq = -1
+
+        # C5: Motion sequence counter — monotonically incremented before each
+        # arm command.  _on_motion_feedback stamps queue items with the seq at
+        # feedback time so _tool_arm_move can detect and discard stale results.
+        self._motion_seq = 0
+
+        # C10: Set to True when the system is running in hardware mode (real
+        # robot with real force feedback).  Set to False for sim/demo where
+        # gripper_force stays 0.0.  Default is hardware (conservative).
+        self._simulation_mode = False
 
         self._last_vision_result = None
         self._last_auth_success = False
@@ -121,8 +155,8 @@ class PlannerNode(Node):
             ws = cfg.get("robot", {}).get("workspace", {})
             if ws:
                 return {k: float(ws.get(k, 0.0)) for k in ['xmin', 'xmax', 'ymin', 'ymax', 'zmin', 'zmax']}
-        except:
-            pass
+        except Exception as e:
+            self.get_logger().warn(f"Failed to load workspace from system.yaml: {e} — using defaults")
         return {'xmin': -0.6, 'xmax': 0.6, 'ymin': -0.6, 'ymax': 0.6, 'zmin': 0.0, 'zmax': 0.75}
 
     def _load_z_heights(self):
@@ -131,7 +165,8 @@ class PlannerNode(Node):
                 cfg = yaml.safe_load(handle) or {}
             robot = cfg.get("robot", {})
             return float(robot.get("face_verify_z", 0.85)), float(robot.get("presentation_z", 0.45))
-        except:
+        except Exception as e:
+            self.get_logger().warn(f"Failed to load z-heights from system.yaml: {e} — using defaults")
             return 0.85, 0.45
 
     def _on_validated_intent(self, msg: ValidatedIntent):
@@ -142,11 +177,12 @@ class PlannerNode(Node):
         inside the ROS2 executor, so all rclpy publisher calls are on
         executor-managed threads — no more raw-thread cross-talk.
         """
-        if self._task_running:
-            self._speak("Task already in progress.")
-            return
-        # Store intent; the polling timer callback will pick it up
-        self._pending_intent = (msg.tool, msg.user_id, msg.name)
+        with self._intent_lock:
+            if self._task_running:
+                self._speak("Task already in progress.")
+                return
+            # Store intent; the polling timer callback will pick it up
+            self._pending_intent = (msg.tool, msg.user_id, msg.name)
 
     def _task_timer_cb(self):
         """Fast-polling timer callback — runs inside the ROS2 executor.
@@ -156,24 +192,30 @@ class PlannerNode(Node):
         etc.) interleave via the ReentrantCallbackGroup + MultiThreadedExecutor,
         so blocking waits (Event.wait, Queue.get) in tool_kernel are safe.
         """
-        if self._task_running:
-            return
-        if self._pending_intent is None:
-            return
-
-        tool, user_id, user_name = self._pending_intent
-        self._pending_intent = None
-        self._task_running = True
+        with self._intent_lock:
+            if self._task_running:
+                return
+            if self._pending_intent is None:
+                return
+            tool, user_id, user_name = self._pending_intent
+            self._pending_intent = None
+            self._task_running = True
 
         try:
             self._run_agentic_task(tool, user_id, user_name)
         except Exception:
             self.get_logger().error("Task crashed", exc_info=True)
         finally:
-            self._task_running = False
+            with self._intent_lock:
+                self._task_running = False
 
     def _run_agentic_task(self, tool: str, user_id: str, user_name: str):
         self._estop_active.clear()
+
+        # M10: Advance search sequence so late-arriving results from a
+        # previous task's search (which set the event) are rejected in
+        # _on_vision_result and _tool_vision_scan.
+        self._vision_search_seq += 1
 
         # Clear stale vision/motion state from previous tasks
         self._vision_event.clear()
@@ -235,12 +277,16 @@ class PlannerNode(Node):
 
     def _on_vision_result(self, msg: VisionResult):
         self._last_vision_result = msg
+        self._completed_vision_seq = self._vision_search_seq
         self._vision_event.set()
 
     def _on_motion_feedback(self, msg: MotionFeedback):
         self.world.gripper_force = float(msg.gripper_force)
+        # C5: Stamp queue items with the current motion sequence number so
+        # _tool_arm_move can detect and discard stale results from a previous
+        # arm command that arrived after the drain but before the new publish.
         try:
-            self._motion_queue.put_nowait(bool(msg.success))
+            self._motion_queue.put_nowait((self._motion_seq, bool(msg.success)))
         except queue.Full:
             pass
 
@@ -253,10 +299,18 @@ class PlannerNode(Node):
             self._estop_active.set()
             self._vision_event.set()
             self._auth_event.set()
-            try:
-                self._motion_queue.put_nowait(False)
-            except queue.Full:
-                pass
+            # H6: Never silently drop the ESTOP signal — drain one slot if
+            # the queue is full, then put the False signal.
+            while True:
+                try:
+                    # C5: Stamp with current motion seq so consumer can match
+                    self._motion_queue.put_nowait((self._motion_seq, False))
+                    break
+                except queue.Full:
+                    try:
+                        self._motion_queue.get_nowait()
+                    except queue.Empty:
+                        break
 
     def _on_robot_state(self, msg: RobotState):
         self.world.robot_state = msg.state
@@ -279,7 +333,12 @@ class PlannerNode(Node):
         req = VisionSearchRequest(tool=tool, reset_probability_map=False, priority_zones=priority_zones)
         self.search_pub.publish(req)
 
-    def _send_arm_move(self, x: float, y: float, z: float, approach_rotation: float = 0.0) -> bool:
+    def _send_arm_move(self, x: float, y: float, z: float, approach_rotation: float = 0.0, velocity_scale: float = 0.5) -> bool:
+        # C5: Increment motion sequence BEFORE publish so that any
+        # _on_motion_feedback arriving after this point carries the new seq
+        # and can be distinguished from stale feedback of the previous command.
+        self._motion_seq += 1
+
         top_down = abs(approach_rotation) < 1.0
         ik_result = self.ik.solve_with_status(
             (x, y, z),
@@ -292,7 +351,7 @@ class PlannerNode(Node):
         cmd = ArmCommand(
             command="MOVE",
             joint_angles=[float(v) for v in ik_result.joint_angles],
-            velocity_scale=0.5,
+            velocity_scale=velocity_scale,
             accel_limit=0.25,
             blocking=True
         )

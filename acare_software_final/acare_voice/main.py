@@ -20,8 +20,12 @@ if __name__ == "__main__":
         main()
     except EOFError:
         print("[System] Terminal input detached. System remaining active in background...")
-        while True:
-            time.sleep(1)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n[System] Shutdown requested.")
+            sys.exit(0)
     except KeyboardInterrupt:
         print("\n[System] Shutdown requested.")
         sys.exit(0)

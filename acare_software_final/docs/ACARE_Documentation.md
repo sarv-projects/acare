@@ -622,7 +622,7 @@ All fixes verified by parse + logic tests. IK FK/IK round-trip still 0.0000m. ES
 | `/raw_transcript` | `Transcript` | VoiceNodeROS | DialogueNode, AuthNode | RELIABLE |
 | `/intent_result` | `Intent` | DialogueNode | AuthNode | RELIABLE |
 | `/auth_request` | `AuthRequest` | DialogueNode | AuthNode | RELIABLE |
-| `/validated_intent` | `ValidatedIntent` | AuthNode | PlannerNode | RELIABLE |
+| `/validated_intent` | `ValidatedIntent` | AuthNode | DialogueNode, PlannerNode | RELIABLE |
 | `/auth_result` | `AuthResult` | AuthNode | StateManager, PlannerNode | RELIABLE |
 | `/tts_request` | `String` | StateManager, PlannerNode, AuthNode, DialogueNode | VoiceNodeROS | RELIABLE |
 | `/vision_search_request` | `VisionSearchRequest` | PlannerNode | VisionNode | RELIABLE |
@@ -893,7 +893,8 @@ top                      # CPU load
 - **Approach rotation**: `arm_approach(SIDE_LEFT/SIDE_RIGHT)` now correctly passes rotation through to IK solver — side-grasp recovery Rung 2 functional
 - **QoS**: StateManager's `/robot_state` publisher uses `TRANSIENT_LOCAL` from `qos_profiles` (was hardcoded `qos=10`)
 - **Graceful degradation logging**: Every LLM call records tier (NIM/Groq/Deterministic), error reason, latency_ms. `LLM_FALLBACK` LogEvent published on every fallback. 3+ consecutive deterministic → `LLM_DEGRADED` alert with WARNING severity
-- **22 bugs fixed** (8 critical, 8 high, 6 medium) across 3 parallel fix passes
+- **22 bugs fixed** (8 critical, 8 high, 6 medium) across 3 parallel fix passes (2026-06-09)
+- **10 additional bugs fixed** (2026-06-11) from fresh line-by-line audit — demo voice confirm, launch ordering, SafetyKernel target_xyz, zones_searched, motion queue, hand_approaching, config error handling, gripper hardware reject, agent_schema logging, workspace loader guards
 - **Demo documentation**: `demo_docs.md` created at project root with pre-demo checklist, demo-day script, auth flow, emergency procedures, quick commands reference
 - LLM allocation wired: Groq 70B dialogue, Groq 8B intent, NIM Nemotron-49B planner (Groq 70B fallback)
 - Assistant agent upgraded: dynamic time/date context, personality, edge-case handling
@@ -907,16 +908,13 @@ top                      # CPU load
 **Hardware team must provide:**
 - DH twist angles (alpha) for J4/J5/J6 — IK assumes a clean spherical wrist with vertical tool drop. If the real wrist has 90° mounting offsets, these need adding to `system.yaml` arm.dh_params.
 - Gearbox ratios for J4/J5/J6 (J2=22:1, J3=15:1 already known)
-- Teensy firmware: UART/CAN protocol for `embedded_interface_node` to talk to
+- Teensy firmware: SPI slave (752 lines, complete) for `embedded_interface_node` to talk to
 - Real arm assembly + motor wiring
 
 **Pending Software Implementations (to be built):**
 - Automated LiDAR calibration routine in `admin_cli.py` (baseline laser scan for reference map).
-- SPI real-hardware communication driver in `embedded_interface_node.py` (translating command/telemetry frames and handling CS/ATTN GPIO hardware interrupts).
 - Voice-driven autonomous registration (P1)
-- Bounded execution time task cap (P2)
 - BehaviorTree integration (P3, optional)
-- Offline STT fallback (P4)
 
 **Calibration (after arm + camera mounted):**
 - **Wrist-mounted camera flange offset** `T_flange_camera` — measure the physical offset from the wrist flange to the camera lens centre (default: 40mm forward, 20mm below). Write to `system.yaml camera.T_flange_camera`.
@@ -1227,7 +1225,7 @@ uv pip install silero-vad sounddevice "deepgram-sdk==3.10.1" groq edge-tts pytts
 ```
 
 ### .env file
-Must exist at `acare_software_final\acare_voice\.env`:
+Must exist at `acare_software_final\.env`:
 ```
 DEEPGRAM_API_KEY=<your_key>
 GROQ_API_KEY=<your_key>
@@ -2434,7 +2432,7 @@ All 22 bugs from the initial audit are fixed. The following items are calibratio
 
 | # | Item | What To Do | Why | Effort |
 |---|------|-----------|-----|--------|
-| H1 | **SPI communication (CRITICAL)** | Wire Teensy 4.1 SPI slave (10 MHz, 64-byte frames) to ROS2 hardware mode in `embedded_interface_node.py`. Firmware at `ACARE-6DOF-Teensey4.1_RMCS.ino`. | Without SPI: no motors move. Arm is a paperweight. | Large |
+|| H1 | **SPI wiring + Teensy flash (CRITICAL)** | Wire 4 SPI pins + GND between Pi5 GPIO and Teensy 4.1. Flash `ACARE-6DOF-Teensey4.1_RMCS.ino` (SPI slave fix applied). Code + firmware are complete — physical wiring only. | Without SPI: no motors move. | 30 min |
 | H2 | **Motor PID tuning** | RMCS-3002 drivers + BLDC. 200 Hz PID in Teensy firmware. Tune P/I/D per joint. | Untuned PID = jerky motion, arm droops, or oscillation. Can damage gears. | 1-2 days |
 | H3 | **AS5600 encoder calibration** | 12-bit magnetic encoders via TCA9548A I2C mux. Offset calibration (physical 0° → electrical 0°). | Wrong offsets → wrong joint position → IK computes wrong angle → arm misses. | 1 hr |
 | H4 | **Emergency stop hardware test** | Test physical ESTOP button, firmware watchdog (200 ms), voice keyword (<200 ms). Document results. | Safety certification requires documented ESTOP tests. | 1 hr |
@@ -2443,12 +2441,10 @@ All 22 bugs from the initial audit are fixed. The following items are calibratio
 
 | # | Item | What To Do | Why | Effort |
 |---|------|-----------|-----|--------|
-| S1 | **Wire dynamic FK extrinsics into NBV** | `localiser.py` has `compute_T_for_viewpoint()` but `nbv_search.py` doesn't pass `T_override`. Add the call. | Object positions in camera frame, not robot frame. Arm moves wrong (masked by demo mode). | 30 min |
-| S2 | **Voice-driven registration** | Add registration state machine to `auth_node.py`. Detect "register me" in LOGGED_OUT, prompt via TTS, auto-capture 10 face + 3 voice samples. | Currently requires CLI terminal. | Medium |
-| S3 | **Bounded execution time** | Add 120 s task cap in `agentic_planner.py`. Publish LogEvent on timeout. | No guarantee task completes. Worst case: 5 min. | 10 lines |
-| S4 | **Offline STT fallback** | Add Vosk/whisper.cpp in `asr.py` when Deepgram fails. | No internet = no voice commands. | Medium |
-| S5 | **Per-phase velocity scales** | Implement: PREGRASP=0.8, GRASP=0.5, FACE=0.6, PRESENT=0.6, SAFE_DROP=0.3. | Smoother demo motions. | 15 min |
-| S6 | **ActionServer migration** | Replace timer polling with proper ROS2 ActionServer for preemption/feedback. | Production-grade. Current works for demo. | Large |
+|| S1 | **Wire dynamic FK extrinsics into NBV** | `localiser.py` has `compute_T_for_viewpoint()` but `nbv_search.py` doesn't pass `T_override`. Add the call. | Object positions in camera frame, not robot frame. Arm moves wrong (masked by demo mode). | 30 min |
+|| S2 | **Voice-driven registration** | Add registration state machine to `auth_node.py`. Detect "register me" in LOGGED_OUT, prompt via TTS, auto-capture 10 face + 3 voice samples. | Currently requires CLI terminal. | Medium |
+|| S3 | **Offline STT fallback** | Add Vosk/whisper.cpp in `asr.py` when Deepgram fails. | No internet = no voice commands. | Medium |
+|| S4 | **ActionServer migration** | Replace timer polling with proper ROS2 ActionServer for preemption/feedback. | Production-grade. Current works for demo. | Large |
 
 ### A.4 Documentation & Testing
 
@@ -2460,5 +2456,8 @@ All 22 bugs from the initial audit are fixed. The following items are calibratio
 
 ---
 
-*Document updated 2026-06-09 — All 22 audit bugs fixed, 15 documentation patches applied.*
+*Document updated 2026-06-09 — All 22 audit bugs fixed, 15 documentation patches applied.*  
+*Document updated 2026-06-11 — +10 additional bugs fixed: C1 (auth demo mode guard), C3 (SafetyKernel target_xyz), C4 (voice launch ordering), H1 (workspace bare except), H3 (ik_reachable), H4 (zones_searched), H5 (motion queue 1→10), H7 (hand_approaching 3-axis), M1 (agent_schema logging), M3/M5 (embedded config+gripper). All 32 bugs fixed.*  
+*Document updated 2026-06-12 — Full code audit completed. 4 more msg/env bugs fixed (HandStatus.msg, AuthRequest.msg, intent_parser.py, assistant_agent.py). Pi deployed with interface.mode=hardware. SPI Phase 1: Teensy responsive but echo timing fix needed (double-attachInterrupt bug). See skill `acare-demo-audit` for hardware bring-up status.*  
+*Document updated 2026-06-13 — 15 additional bugs fixed: dialogue_node.py clarification loop, camera_probe.py/vision_node.py rclpy.parameter_client, normaliser.py/alias_expansion.py triple alias consolidation, main.py EOFError handler, nbv_search.py inline imports, hand_tracker.py warn(), supervisor.py deprecation, preflight_ros_env.py spidev check, demo_docs.md wrong paths.*
 

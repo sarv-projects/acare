@@ -1,1 +1,0 @@
-/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/src/acare_msgs/msg/StateTransition.msg

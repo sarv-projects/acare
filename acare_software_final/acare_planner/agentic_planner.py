@@ -4,6 +4,10 @@ import os
 import time
 from typing import Optional
 
+from acare_bringup.paths import load_env
+
+load_env()
+
 from .state_snapshot import TaskSnapshot
 from .agent_schema import validate_agentic_decision, ToolCallSchema
 
@@ -83,7 +87,7 @@ Response: {"thought":"Face failed twice, skip and proceed to present","tool":"ar
 """
 
 class AgenticPlanner:
-    def __init__(self, logger=None):
+    def __init__(self, logger=None, cfg=None):
         self.logger = logger
         self._nim_client = None
         self._groq_client = None
@@ -91,6 +95,13 @@ class AgenticPlanner:
         # Degradation tracking
         self._last_call_info = {}        # tier, error, latency_ms, tool_called
         self._consecutive_deterministic = 0
+        # Circuit breaker for repeated API failures (M12)
+        self._api_failure_count = 0
+        self._circuit_open = False
+        self._circuit_open_until = 0.0
+        # Adaptive task timeout (M6) — load from config, default 180s
+        cfg = cfg or {}
+        self.task_timeout = cfg.get('planner', {}).get('task_timeout_s', 180.0)
 
     def _init_clients(self):
         try:
@@ -124,6 +135,22 @@ class AgenticPlanner:
         ]
         start_t = time.monotonic()
 
+        # Circuit breaker (M12): skip LLM if open and within cooldown
+        if self._circuit_open:
+            if time.monotonic() < self._circuit_open_until:
+                if self.logger:
+                    self.logger.info("Circuit breaker open, skipping LLM")
+                decision = self._deterministic_next_step(snapshot)
+                elapsed_ms = int((time.monotonic() - start_t) * 1000)
+                self._last_call_info = {'tier': 'Deterministic', 'error': 'Circuit breaker open',
+                                        'latency_ms': elapsed_ms,
+                                        'tool_called': decision.tool if decision else ''}
+                return decision
+            else:
+                # Cooldown expired, close circuit
+                self._circuit_open = False
+                self._api_failure_count = 0
+
         if self._nim_client:
             try:
                 response = self._nim_client.chat.completions.create(
@@ -137,6 +164,9 @@ class AgenticPlanner:
                 elapsed_ms = int((time.monotonic() - start_t) * 1000)
                 self._last_call_info = {'tier': 'NIM', 'error': '', 'latency_ms': elapsed_ms,
                                         'tool_called': decision.tool if decision else ''}
+                # Circuit breaker (M12): reset on NIM success
+                self._api_failure_count = 0
+                self._circuit_open = False
                 return decision
             except Exception as e:
                 err_msg = str(e)
@@ -156,6 +186,9 @@ class AgenticPlanner:
                 self._last_call_info = {'tier': 'Groq', 'error': f'NIM->Groq: {err_msg}',
                                         'latency_ms': elapsed_ms,
                                         'tool_called': decision.tool if decision else ''}
+                # Circuit breaker (M12): reset on Groq success
+                self._api_failure_count = 0
+                self._circuit_open = False
                 return decision
             except Exception as e:
                 err_msg = str(e)
@@ -222,7 +255,40 @@ class AgenticPlanner:
 
     def run_task(self, node, tool_kernel, snapshot: TaskSnapshot):
         """The main agentic loop with degradation logging."""
+        # Adaptive task deadline (M6) — compute budget based on remaining work
+        phase = snapshot.objective.task_phase
+        zones_searched = len(getattr(snapshot, 'zones_searched', []))
+        num_searches = max(1, 3 - zones_searched) if phase == "SEARCHING" else 0
+        if phase == "SEARCHING":
+            num_moves = 4  # PREGRASP, GRASP_POINT, FACE_HEIGHT, PRESENTATION
+        elif phase == "GRASPING":
+            num_moves = 3
+        elif phase == "HANDOVER":
+            num_moves = 1
+        else:
+            num_moves = 0
+        adaptive_budget = (num_searches * 60) + (num_moves * 30) + 30
+        final_timeout = max(adaptive_budget, self.task_timeout)
+        task_deadline = time.monotonic() + final_timeout
         while snapshot.budget.calls_remaining > 0:
+            if time.monotonic() > task_deadline:
+                node._speak("Task timed out. Aborting.")
+                try:
+                    node.log_pub.publish(LogEvent(
+                        event_type='TASK_TIMEOUT',
+                        user_id='',
+                        tool=snapshot.objective.tool,
+                        state=snapshot.objective.task_phase,
+                        description='Task exceeded 120s deadline',
+                        timestamp=int(time.time() * 1000),
+                        safety_severity='WARNING'
+                    ))
+                except Exception:
+                    pass
+                if node.world.arm_holding:
+                    tool_kernel._tool_abort_task("task_timeout")
+                break
+
             if node._estop_active.is_set():
                 break
 
@@ -249,27 +315,30 @@ class AgenticPlanner:
                 except Exception:
                     pass
 
-            # Track consecutive deterministic fallbacks for alerting
+            # Circuit breaker (M12): track API failures, open circuit after 3 consecutive
             if tier == 'Deterministic':
+                self._api_failure_count += 1
                 self._consecutive_deterministic += 1
+                if self._api_failure_count >= 3 and not self._circuit_open:
+                    self._circuit_open = True
+                    self._circuit_open_until = time.monotonic() + 60.0
+                    try:
+                        node.log_pub.publish(LogEvent(
+                            event_type='LLM_CIRCUIT_OPEN',
+                            user_id='',
+                            tool=self._last_call_info.get('tool_called', ''),
+                            state=snapshot.objective.task_phase,
+                            description='Circuit breaker opened: 3+ consecutive API failures. Skipping LLM for 60s.',
+                            timestamp=int(time.time() * 1000),
+                            safety_severity='WARNING'
+                        ))
+                    except Exception:
+                        pass
+                    if self.logger:
+                        self.logger.warning('LLM circuit breaker opened: 3+ deterministic fallbacks')
             elif tier == 'NIM':
                 self._consecutive_deterministic = 0
-
-            if self._consecutive_deterministic >= 3:
-                try:
-                    node.log_pub.publish(LogEvent(
-                        event_type='LLM_DEGRADED',
-                        user_id='',
-                        tool=self._last_call_info.get('tool_called', ''),
-                        state=snapshot.objective.task_phase,
-                        description=f'3+ consecutive deterministic fallbacks. Primary LLM may be down.',
-                        timestamp=int(time.time() * 1000),
-                        safety_severity='WARNING'
-                    ))
-                except Exception:
-                    pass
-                if self.logger:
-                    self.logger.warning('LLM_DEGRADED: 3+ deterministic fallbacks')
+                # Counter reset on NIM success handled in _call_llm
 
             if decision.speak:
                 node._speak(decision.speak)
@@ -295,6 +364,11 @@ class AgenticPlanner:
 
             if decision.tool == "vision_scan" and success:
                 snapshot.objective.task_phase = "GRASPING"
+            elif decision.tool == "vision_scan":
+                # Track searched zones so the LLM snapshot reflects actual progress
+                zone = decision.params.get('zone', 'ALL') if decision.params else 'ALL'
+                if zone not in snapshot.zones_searched:
+                    snapshot.zones_searched.append(zone)
             elif decision.tool == "arm_move" and success and decision.params.get('position') == 'PRESENTATION':
                 snapshot.objective.task_phase = "HANDOVER"
 

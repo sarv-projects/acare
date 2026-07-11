@@ -22,6 +22,7 @@ from rclpy.node import Node as RclpyNode
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from acare_bringup.paths import LOG_DIR
 from acare_bringup.qos_profiles import TOPIC_ESTOP
+from std_srvs.srv import Trigger
 
 try:
     from acare_msgs.msg import EmergencySignal, LogEvent, StateTransition
@@ -78,10 +79,20 @@ class SupervisorNode(RclpyNode):
 
         # ESTOP publisher (primary monitor function)
         self._estop_pub = None
+        self._state_transition_pub = None
         if MSGS_OK:
             self._estop_pub = self.create_publisher(
                 EmergencySignal, '/emergency_stop', TOPIC_ESTOP
             )
+            self._state_transition_pub = self.create_publisher(
+                StateTransition, '/state_transition', TOPIC_ESTOP
+            )
+
+        # Healthcheck service (for external watchdog monitoring)
+        self._healthcheck_srv = self.create_service(
+            Trigger, '/supervisor_healthcheck', self._healthcheck_callback
+        )
+        self.get_logger().info('Healthcheck service on /supervisor_healthcheck')
 
         # Check power recovery condition on startup (Spec Section XVII)
         self._check_power_recovery()
@@ -115,14 +126,19 @@ class SupervisorNode(RclpyNode):
             self.get_logger().error('Unknown node: %s', name)
             return
         try:
-            self.get_logger().warn('Restarting %s...', name)
+            self.get_logger().warn(
+                'Restarting %s via subprocess — launch params, remaps, '
+                'and config overrides from initial launch are NOT preserved. '
+                'The node starts with defaults.',
+                name,
+            )
             subprocess.Popen(cmd)
             self.get_logger().info('%s restart initiated', name)
         except Exception as e:
             self.get_logger().error('Failed to restart %s: %s', name, e)
 
     def _trigger_estop(self, reason: str):
-        """Publish EmergencySignal to /emergency_stop."""
+        """Publish EmergencySignal to /emergency_stop and StateTransition to /state_transition."""
         if not self._estop_pub:
             self.get_logger().error(
                 'Cannot publish ESTOP — acare_msgs not available. Reason: %s',
@@ -135,6 +151,48 @@ class SupervisorNode(RclpyNode):
         msg.source = 'supervisor'
         self._estop_pub.publish(msg)
         self.get_logger().warn('ESTOP TRIGGERED: %s', reason)
+
+        # Also publish StateTransition to directly trigger state machine transition
+        if self._state_transition_pub:
+            try:
+                state_msg = StateTransition()
+                state_msg.target_state = 'ESTOP'
+                state_msg.reason = reason
+                self._state_transition_pub.publish(state_msg)
+                self.get_logger().info(
+                    'Published /state_transition -> ESTOP (reason: %s)', reason
+                )
+            except Exception as e:
+                self.get_logger().error('Failed to publish StateTransition: %s', e)
+
+    # ------------------------------------------------------------------
+    # Healthcheck service
+    # ------------------------------------------------------------------
+
+    def _healthcheck_callback(self, request, response):
+        """Service callback for /supervisor_healthcheck.
+
+        Returns success if all ACARE nodes are present in the ROS graph.
+        """
+        alive_nodes = self.get_node_names()
+        missing = [
+            name for name, ros_name in NODE_ROS_NAMES.items()
+            if ros_name not in alive_nodes
+        ]
+        if missing:
+            response.success = False
+            response.message = (
+                'Supervisor healthcheck FAILED — nodes not in graph: '
+                f'{", ".join(missing)}'
+            )
+            self.get_logger().warn(response.message)
+        else:
+            response.success = True
+            response.message = (
+                f'Supervisor healthcheck OK — all {len(NODE_ROS_NAMES)} '
+                f'ACARE nodes are in the ROS graph'
+            )
+        return response
 
     # ------------------------------------------------------------------
     # Power Recovery (Spec Section XVII)

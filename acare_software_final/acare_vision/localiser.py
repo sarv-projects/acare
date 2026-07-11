@@ -160,12 +160,20 @@ class Localiser:
                 return None
             depth_mm = float(np.median(valid))
 
+        # H9: Guard against NaN/Inf depth values
+        if not np.isfinite(depth_mm):
+            return None
+
         depth_m = depth_mm / 1000.0
 
         # Pinhole back-projection: pixel → camera frame
         X_cam = (u - self.cx) * depth_m / self.fx
         Y_cam = (v - self.cy) * depth_m / self.fy
         Z_cam = depth_m
+
+        # H9: Guard against NaN/Inf from camera parameters
+        if not all(np.isfinite(v) for v in [X_cam, Y_cam, Z_cam]):
+            return (0.0, 0.0, 0.0)
 
         # Transform to robot base frame
         T = T_override if T_override is not None else self.T

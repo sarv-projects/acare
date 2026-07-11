@@ -209,12 +209,12 @@ class IKSolver:
         if planar > (L1 + L2):
             reachable = False
             reasons.append("target_too_far")
-            planar = (L1 + L2) - 1e-4
+            planar = (L1 + L2) - 1e-3
             planar_sq = planar * planar
         if planar < abs(L1 - L2):
             reachable = False
             reasons.append("target_too_close")
-            planar = abs(L1 - L2) + 1e-4
+            planar = abs(L1 - L2) + 1e-3
             planar_sq = planar * planar
 
         # --- J3 (elbow joint angle) via law of cosines ---
@@ -281,7 +281,9 @@ class IKSolver:
     # ------------------------------------------------------------------
     @staticmethod
     def _wrap_angle(a: float) -> float:
-        """Wrap to [-pi, pi]."""
+        """Wrap to [-pi, pi]. Returns 0.0 for NaN/Inf inputs to avoid infinite loops."""
+        if not math.isfinite(a):
+            return 0.0
         while a > math.pi:
             a -= 2.0 * math.pi
         while a < -math.pi:

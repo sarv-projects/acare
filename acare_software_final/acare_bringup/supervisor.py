@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# DEPRECATED - Use supervisor_node.py instead
 # acare_bringup/supervisor.py
 # Spec Reference: Section V (Node Crash Recovery)
 #

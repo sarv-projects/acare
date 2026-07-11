@@ -1,11 +1,11 @@
-from dotenv import load_dotenv
 from groq import Groq
 import json
 import os
 from .fast_intent import parse_fast_intent, is_simple_command
 from acare_bringup.constants import VALID_TOOLS
+from acare_bringup.paths import load_env
 
-load_dotenv()
+load_env()
 
 
 def _get_client() -> Groq:

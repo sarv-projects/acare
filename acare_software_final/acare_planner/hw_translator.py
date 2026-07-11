@@ -1,7 +1,10 @@
 # acare_planner/hw_translator.py
+import logging
 import yaml
 from pathlib import Path
 from acare_bringup.paths import SYSTEM_YAML
+
+logger = logging.getLogger(__name__)
 
 class HWTranslator:
     def __init__(self):
@@ -9,8 +12,8 @@ class HWTranslator:
         self.base_grasp_force_n = float(self.config.get('planner', {}).get('base_grasp_force_n', 3.0))
         
         robot_cfg = self.config.get('robot', {})
-        self.safe_drop_zone = self._to_float_list(robot_cfg.get('safe_drop_zone', [0.0, 0.4, 0.0]))
-        self.face_verify_z = float(robot_cfg.get('face_verify_z', 0.85))
+        self.safe_drop_zone = self._to_float_list(robot_cfg.get('safe_drop_zone', [0.0, 0.35, 0.05]))
+        self.face_verify_z = float(robot_cfg.get('face_verify_z', 0.70))
         self.presentation_z = float(robot_cfg.get('presentation_z', 0.45))
         
         hz = self._to_float_list(robot_cfg.get('handover_zone', [0.0, 0.4, 0.1]))
@@ -27,10 +30,16 @@ class HWTranslator:
                 with open(SYSTEM_YAML) as f:
                     return yaml.safe_load(f) or {}
             except Exception:
-                pass
+                logger.error(f"Failed to parse config file: {SYSTEM_YAML}. "
+                             "Robot behaviour may be unsafe without valid configuration.")
+        else:
+            logger.error(f"Config file not found: {SYSTEM_YAML}. "
+                         "Robot behaviour may be unsafe without valid configuration.")
         return {}
 
     def _to_float_list(self, val) -> list:
+        if isinstance(val, str):
+            raise ValueError(f"Expected list or dict for config value, got string: {val}")
         if isinstance(val, dict):
             return [float(val.get('x', 0.0)), float(val.get('y', 0.0)), float(val.get('z', 0.0))]
         return [float(v) for v in val] if isinstance(val, (list, tuple)) else val

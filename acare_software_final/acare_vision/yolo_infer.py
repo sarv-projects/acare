@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 import cv2
 import numpy as np
 import onnxruntime as ort
 import yaml
+
+logger = logging.getLogger(__name__)
 
 from acare_bringup.paths import SYSTEM_YAML
 
@@ -25,7 +29,7 @@ DEFAULT_CLASS_SETS = {
 
 
 class YOLO26ONNX:
-    def __init__(self, model_path: str, conf_thresh: float = 0.70):
+    def __init__(self, model_path: str, conf_thresh: float = 0.55):
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 4
         opts.inter_op_num_threads = 1
@@ -62,6 +66,7 @@ class YOLO26ONNX:
         self.gamma_dark = float(cfg.get("low_light_gamma_dark", 1.55))
         self.gamma_very_dark = float(cfg.get("low_light_gamma_very_dark", 1.85))
         self.enable_unsharp_mask = bool(cfg.get("low_light_enable_unsharp_mask", True))
+        self.blur_threshold = float(cfg.get("blur_threshold", 100.0))
 
     def _load_vision_config(self) -> dict:
         try:
@@ -105,10 +110,14 @@ class YOLO26ONNX:
             return bgr_frame
         if not hasattr(self, '_gamma_cache'):
             self._gamma_cache = {}
-        if gamma not in self._gamma_cache:
+        gamma_key = round(gamma, 6)
+        if gamma_key not in self._gamma_cache:
             inv_gamma = 1.0 / gamma
-            self._gamma_cache[gamma] = np.array([(i / 255.0) ** inv_gamma * 255.0 for i in range(256)], dtype=np.float32)
-        table = self._gamma_cache[gamma]
+            self._gamma_cache[gamma_key] = np.array(
+                [(i / 255.0) ** inv_gamma * 255.0 for i in range(256)],
+                dtype=np.float32,
+            )
+        table = self._gamma_cache[gamma_key]
         return cv2.LUT(bgr_frame, table.astype(np.uint8))
 
     def _apply_unsharp_mask(self, bgr_frame: np.ndarray) -> np.ndarray:
@@ -120,7 +129,7 @@ class YOLO26ONNX:
         if not profile["is_low_light"]:
             return bgr_frame
 
-        working = cv2.fastNlMeansDenoisingColored(bgr_frame, None, 3, 3, 7, 21)
+        working = cv2.GaussianBlur(bgr_frame, (3, 3), 0.5)
         gamma = self.gamma_very_dark if profile["is_very_dark"] else self.gamma_dark
         working = self._apply_gamma(working, gamma)
 
@@ -277,6 +286,12 @@ class YOLO26ONNX:
             # YOLO26 NMS-free: simpler pipeline, no multi-variant TTA needed
             # (model already handles varying conditions better due to training augmentation)
             profile = self._scene_profile(bgr_frame)
+            if profile["lap_var"] < self.blur_threshold:
+                logger.debug(
+                    "frame blurred (lap_var=%.1f), skipping", profile["lap_var"]
+                )
+                return []
+
             score_threshold = self.low_light_conf_thresh if profile["is_low_light"] else self.conf_thresh
 
             # Apply light enhancement only in very dark conditions
@@ -297,6 +312,12 @@ class YOLO26ONNX:
 
         # Legacy YOLO11 path (kept for backward compatibility)
         profile = self._scene_profile(bgr_frame)
+        if profile["lap_var"] < self.blur_threshold:
+            logger.debug(
+                "frame blurred (lap_var=%.1f), skipping", profile["lap_var"]
+            )
+            return []
+
         variants = self._make_inference_variants(bgr_frame, profile)
         score_threshold = self.low_light_conf_thresh if profile["is_low_light"] else self.conf_thresh
         detections = []

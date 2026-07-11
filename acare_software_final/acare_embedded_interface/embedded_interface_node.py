@@ -44,6 +44,7 @@ from acare_msgs.msg import (
     RobotState,
 )
 from acare_bringup.qos_profiles import TOPIC_STATE, TOPIC_SENSOR, TOPIC_COMMAND, TOPIC_ESTOP
+from std_srvs.srv import Trigger
 
 
 # Spec joint order — must match URDF and ros2_controllers.yaml
@@ -88,8 +89,12 @@ class EmbeddedInterfaceNode(Node):
         self.create_subscription(EmergencySignal, "/emergency_stop", self._on_estop, TOPIC_ESTOP)
         self.create_subscription(RobotState, "/robot_state", self._on_robot_state, TOPIC_STATE)
 
+        # Clear ESTOP hard latch service
+        self._clear_estop_srv = self.create_service(Trigger, '/clear_estop', self._on_clear_estop)
+
         self._lock = threading.Lock()
         self._estop = False
+        self._estop_latched = False
         self._robot_state = "LOGGED_OUT"
 
         # SPI hardware path (only initialized if mode == "hardware")
@@ -145,7 +150,8 @@ class EmbeddedInterfaceNode(Node):
             
             return (mode, limits_min, limits_max, rest, interaction, kiosk_velocity, kiosk_accel)
         except Exception as exc:
-            self.get_logger().warn(f"Falling back to default config: {exc}")
+            self.get_logger().error(f"Failed to load config from system.yaml: {exc}")
+            self.get_logger().error("Using hardcoded fallback values — robot behaviour may be unsafe!")
             return (
                 "sim",
                 [-3.14159, -2.35619, -2.09440, -3.14159, -3.14159, -3.14159],
@@ -193,11 +199,11 @@ class EmbeddedInterfaceNode(Node):
         with self._lock:
             prev = self._robot_state
             self._robot_state = msg.state
-            # Clear the ESTOP latch when the system recovers to STANDBY/LOGGED_OUT.
-            # Without this, every goal stays rejected until process restart.
+            # Clear the soft ESTOP flag when the system recovers to STANDBY/LOGGED_OUT.
+            # The hard latch (_estop_latched) is only cleared by the /clear_estop service.
             if msg.state in ("STANDBY", "LOGGED_OUT") and prev == "ESTOP":
                 self._estop = False
-                self.get_logger().info("Embedded interface: ESTOP latch cleared on recovery")
+                self.get_logger().info("Embedded interface: ESTOP soft latch cleared on recovery (hard latch still set)")
 
     # ------------------------------------------------------------------
     # Command guards
@@ -354,13 +360,20 @@ class EmbeddedInterfaceNode(Node):
             self._publish_feedback(False, f"arm_{cmd.lower()}", "spi_device_not_initialized")
             return
 
+        # Check both soft and hard ESTOP latches before sending hardware commands
+        with self._lock:
+            if self._estop or self._estop_latched:
+                self._publish_feedback(False, f"arm_{cmd.lower()}", "estop_active")
+                return
+
         try:
             # Pack JointCmd struct: 6 floats (target_pos) + 1 byte (estop=0)
             # Matches Teensy firmware: struct JointCmd { float target_pos[6]; uint8_t estop; }
             cmd_bytes = struct.pack('<6f B', *positions, 0)
             
-            # SPI transfer: send command, receive state
-            response = self._spi_device.xfer2(list(cmd_bytes) + [0] * (SPI_PACKET_BYTES - len(cmd_bytes)))
+            # SPI transfer: send command, receive state (with timeout)
+            data_out = list(cmd_bytes) + [0] * (SPI_PACKET_BYTES - len(cmd_bytes))
+            response = self._spi_transfer_with_timeout(data_out)
             
             # Parse JointState response: 6 floats + 6 uint16 + 1 byte
             state = struct.unpack('<6f 6H B', bytes(response[:SPI_PACKET_BYTES]))
@@ -376,6 +389,13 @@ class EmbeddedInterfaceNode(Node):
             
             self._publish_feedback(True, f"arm_{cmd.lower()}", "")
             
+        except TimeoutError as exc:
+            self.get_logger().error(f"SPI transfer timed out: {exc}")
+            self._publish_feedback(False, f"arm_{cmd.lower()}", f"spi_timeout:{exc}")
+            # Transition to safe state on timeout — set ESTOP latches
+            with self._lock:
+                self._estop = True
+                self._estop_latched = True
         except Exception as exc:
             self.get_logger().error(f"SPI transfer failed: {exc}")
             self._publish_feedback(False, f"arm_{cmd.lower()}", f"spi_error:{exc}")
@@ -405,19 +425,25 @@ class EmbeddedInterfaceNode(Node):
             phase = f"gripper_{cmd.lower()}"
             self._send_goal_async(self._gripper_client, goal, phase, gripper_force=force)
         else:
-            # Hardware path: gripper is controlled via joint 5 (wrist_3) or separate SPI command
-            # For now, publish success — actual gripper hardware integration TBD
-            self._publish_feedback(True, f"gripper_{cmd.lower()}", "", gripper_force=force)
+            # Hardware path: gripper SPI command not yet implemented.
+            # Do NOT return success — reject with clear error so planner
+            # knows hardware gripper is unavailable and can abort safely.
+            self.get_logger().error(
+                f"Hardware gripper path not implemented — rejecting {cmd.lower()} command"
+            )
+            self._publish_feedback(False, f"gripper_{cmd.lower()}", "hardware_gripper_not_implemented")
 
     def _on_estop(self, _msg: EmergencySignal):
         with self._lock:
             self._estop = True
+            self._estop_latched = True
         
         if self._interface_mode == "hardware" and self._spi_device is not None:
             # Send ESTOP via SPI: pack JointCmd with estop=1
             try:
                 cmd_bytes = struct.pack('<6f B', 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1)
-                self._spi_device.xfer2(list(cmd_bytes) + [0] * (SPI_PACKET_BYTES - len(cmd_bytes)))
+                data_out = list(cmd_bytes) + [0] * (SPI_PACKET_BYTES - len(cmd_bytes))
+                self._spi_transfer_with_timeout(data_out)
                 self.get_logger().info("ESTOP sent via SPI to Teensy")
             except Exception as exc:
                 self.get_logger().error(f"Failed to send ESTOP via SPI: {exc}")
@@ -430,6 +456,47 @@ class EmbeddedInterfaceNode(Node):
                 pass
         
         self._publish_feedback(False, "estop", "Emergency stop active")
+
+    # ------------------------------------------------------------------
+    # Clear ESTOP hard latch service
+    # ------------------------------------------------------------------
+    def _on_clear_estop(self, request, response):
+        """Service callback for /clear_estop — clears the hard latch (_estop_latched)."""
+        with self._lock:
+            self._estop_latched = False
+        self.get_logger().info("ESTOP hard latch cleared via /clear_estop service")
+        response.success = True
+        response.message = "ESTOP hard latch cleared"
+        return response
+
+    # ------------------------------------------------------------------
+    # SPI transfer with timeout
+    # ------------------------------------------------------------------
+    def _spi_transfer_with_timeout(self, data, timeout=2.0):
+        """Perform SPI transfer with a timeout. Raises TimeoutError if the
+        Teensy does not respond within ``timeout`` seconds."""
+        result = []
+        exc_info = []
+
+        def transfer():
+            try:
+                result.append(self._spi_device.xfer2(data))
+            except Exception as e:
+                exc_info.append(e)
+
+        t = threading.Thread(target=transfer, daemon=True)
+        t.start()
+        t.join(timeout)
+
+        if t.is_alive():
+            # Thread still running → SPI hung, transition to safe state
+            self.get_logger().error(f"SPI transfer timed out after {timeout}s — Teensy may be unresponsive")
+            raise TimeoutError(f"SPI transfer timed out after {timeout}s")
+
+        if exc_info:
+            raise exc_info[0]
+
+        return result[0]
 
 
 def main(args=None):

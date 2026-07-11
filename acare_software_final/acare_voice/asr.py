@@ -4,13 +4,14 @@ import numpy as np
 import time
 import inspect
 from typing import Any, cast
-from dotenv import load_dotenv
 import os
 from .keyword_monitor import KeywordMonitor
 from deepgram import DeepgramClient
 from deepgram.clients.live.v1 import LiveTranscriptionEvents, LiveOptions
 
-load_dotenv()
+from acare_bringup.paths import load_env
+
+load_env()
 
 def _require_env_str(key: str) -> str:
     value = os.getenv(key)

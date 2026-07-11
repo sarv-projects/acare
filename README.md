@@ -762,6 +762,20 @@ sudo shutdown now
 
 ---
 
+## Hardware & Firmware
+
+All embedded system files (Teensy firmware, motor controller code, electronics) are organised under [`embedded/`](embedded/):
+
+| File | Description |
+|------|-------------|
+| `embedded/firmware/main_teensy_firmware.ino` | Primary Teensy 4.1 firmware — SPI slave, 200Hz PID, 6x UART |
+| `embedded/firmware/rmcs3002_modbus_3motor.ino` | 3-motor Modbus ASCII open-loop controller (reference) |
+| `embedded/firmware/rmcs3002_pwm_test.ino` | Legacy RMCS3002 PWM test |
+
+See [`embedded/README.md`](embedded/README.md) for details.
+
+---
+
 ## Project Structure
 
 ```
@@ -812,10 +826,25 @@ ACARE/
 │   ├── acare_embedded_interface/ # Hardware bridge (Gazebo/SPI)
 │   ├── acare_admin/              # Staff management CLI
 │   ├── models/                   # ML models (YOLO ONNX, checkpoint)
-│   ├── simulation/               # Gazebo simulation (WSL)
+│   ├── sim_files/                # Gazebo simulation launch helpers
 │   ├── scripts/                  # Build and validation helpers
-│   └── ACARE-6DOF-Teensey4.1_RMCS.ino  # Teensy 4.1 firmware
-├── sim_files/                    # Simulation launch helpers
+│   ├── docs/                     # Technical documentation + diagrams
+│   ├── camera_configs/           # Camera configuration files
+│   └── requirements_ros2_runtime.txt
+├── embedded/                     # Hardware / firmware / electronics
+│   ├── firmware/
+│   │   ├── main_teensy_firmware.ino         # Teensy 4.1 SPI slave + PID control
+│   │   ├── rmcs3002_modbus_3motor.ino       # 3-motor Modbus open-loop (ref.)
+│   │   └── rmcs3002_pwm_test.ino            # Legacy PWM open-loop test
+│   └── README.md
+├── docs/                         # Top-level documentation
+│   ├── demo_run_sheet.md         # Demo day run sheet
+│   ├── images/                   # Screenshots, annotated data, test images
+│   │   ├── screenshots/
+│   │   ├── annotated/
+│   │   └── test_images/
+│   └── media/                    # Demo video
+├── benchmarks/                   # LLM benchmark results (for reference)
 ├── .gitignore
 └── README.md                     # This file
 ```

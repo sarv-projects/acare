@@ -1,2 +1,0 @@
-[console_scripts]
-admin_cli = admin_cli:main

@@ -82,7 +82,7 @@ class HandTracker:
         else:
             self._hands = None
             if logger:
-                logger.warn('MediaPipe not available — hand tracking disabled')
+                logger.warning('MediaPipe not available — hand tracking disabled')
 
     def set_viewpoint_joints(self, joint_angles: list[float]):
         """
@@ -203,8 +203,14 @@ class HandTracker:
             if pos:
                 msg.x, msg.y, msg.z = pos
 
-        # --- hand_approaching: hand is open and within reach (e.g., z < 0.6m in front) ---
-        # Note: palm_up is now advisory for this camera geometry. X is forward depth in robot frame.
-        msg.hand_approaching = bool(msg.hand_detected and msg.is_open and 0.0 < msg.x < 0.6)
+        # --- hand_approaching: hand is open and palm centre is within a
+        # reasonable reachable volume in front of the robot (0.1m < x < 0.65m,
+        # |y| < 0.4m, z > 0.0m).  x is forward depth in robot frame.
+        msg.hand_approaching = bool(
+            msg.hand_detected and msg.is_open
+            and 0.10 < msg.x < 0.65
+            and abs(msg.y) < 0.40
+            and msg.z > 0.0
+        )
 
         return msg

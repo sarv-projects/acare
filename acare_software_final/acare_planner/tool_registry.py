@@ -87,11 +87,12 @@ TOOL_REGISTRY = {
 }
 
 # Build reverse lookup: alias -> canonical name
-_ALIAS_TO_CANONICAL = {}
+# Public so other modules can import it (single source of truth)
+ALIAS_TO_CANONICAL = {}
 for canonical, entry in TOOL_REGISTRY.items():
-    _ALIAS_TO_CANONICAL[canonical] = canonical
+    ALIAS_TO_CANONICAL[canonical] = canonical
     for alias in entry["aliases"]:
-        _ALIAS_TO_CANONICAL[alias.lower()] = canonical
+        ALIAS_TO_CANONICAL[alias.lower()] = canonical
 
 # Build YOLO class -> canonical lookup (for vision_node result mapping)
 _YOLO_CLASS_TO_CANONICAL = {}
@@ -112,7 +113,7 @@ def yolo_class_to_canonical(yolo_class: str) -> str | None:
 
 def resolve_alias(name: str) -> str | None:
     """Any alias or canonical name -> canonical name."""
-    return _ALIAS_TO_CANONICAL.get(name.lower())
+    return ALIAS_TO_CANONICAL.get(name.lower())
 
 
 def get_all_canonical_names() -> list[str]:
@@ -127,4 +128,4 @@ def get_all_yolo_classes() -> list[str]:
 
 def is_valid_tool(name: str) -> bool:
     """Returns True if name is a canonical tool name or a known alias."""
-    return name.lower() in _ALIAS_TO_CANONICAL
+    return name.lower() in ALIAS_TO_CANONICAL

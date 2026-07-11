@@ -1,1 +1,0 @@
-/home/shreevanth-m/acare_demo_ws/src/acaresim_final/acaresim/build/acare_msgs/rosidl_typesupport_introspection_cpp/acare_msgs/msg/detail/hand_status__rosidl_typesupport_introspection_cpp.hpp

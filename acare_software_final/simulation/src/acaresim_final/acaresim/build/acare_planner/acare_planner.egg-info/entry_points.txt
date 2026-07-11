@@ -1,4 +1,0 @@
-[console_scripts]
-embedded_interface = embedded_interface_node:main
-planner_node = planner_node:main
-state_manager = state_manager:main

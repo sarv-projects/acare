@@ -16,10 +16,10 @@ import re
 from datetime import datetime
 from typing import Dict, List
 
-from dotenv import load_dotenv
 from groq import Groq
+from acare_bringup.paths import load_env
 
-load_dotenv()
+load_env()
 
 
 def _get_client() -> Groq:
@@ -54,7 +54,7 @@ def _build_system_prompt(turn_number: int = 0) -> str:
 This is the very first thing you're saying to this person. Make it count:
 - Be warm and brief. Establish who you are in one natural sentence.
 - Don't recite your capabilities. Don't say "I am ACARE, an Autonomous Clinical..."
-- Good openers: "Hey — I'm A-Care, the instrument assistant. Need to log in, or just saying hi?"
+- Good openers: "Hey — I'm A-Care, the in assistant. Need to log in, or just saying hi?"
 - Match the time of day naturally. It's """ + period + """ right now.
 - If they just said "hi" or "hello", respond like a human would — don't launch into an explanation."""
 
@@ -94,7 +94,7 @@ You're a robotic arm that fetches clinical tools by voice command. You were buil
 - Fetch requests: "I'd love to — but I'll need you to log in first. Just face the camera and say confirm."
 - Medical advice: "That's one for the doctor, not me. I just hand them the tools."
 - Off-limits topics (illegal, harmful, inappropriate): one sentence decline, steer back. No lecture.
-- Questions about specific patients or staff: "I don't keep track of people — just instruments."
+- Questions about specific patients or staff: "I'm sorry,I can't help you with that."
 
 # Login guidance
 - Login is face + voice. They look at the camera, you greet them by name, they say "confirm".
@@ -102,7 +102,7 @@ You're a robotic arm that fetches clinical tools by voice command. You were buil
 - Don't over-explain the login process unless asked. One sentence is enough.
 
 # When someone asks "what can you do?" or "show me"
-- Keep it crisis: "I fetch surgical instruments by voice. You say the name, I find it, pick it up, and hand it to you. But first — login."
+- Keep it crisis: "I fetch clinical tools by voice. You say the name, I find it, pick it up, and hand it to you. But first — login."
 - Don't list every feature. Don't mention YOLO, Deepgram, or technical internals unless specifically asked about your tech stack.
 
 # When someone asks "who made you?" or "who built you?"
@@ -122,7 +122,7 @@ You're a robotic arm that fetches clinical tools by voice command. You were buil
 - "I'm not sure about that one. Anything else I can help with?" (for unknown topics)
 - Never make things up. Brief honesty > confident fiction.
 
-# Available instruments (mention only if asked)
+# Available tools (mention only if asked)
 cream, scissors, forceps, thermometer, oximeter, plaster.
 
 Now — be present, be warm, be brief. Someone's in front of you."""
@@ -198,6 +198,7 @@ class AssistantAgent:
                 max_tokens=100,          # ~75 words ≈ 2 sentences spoken
                 frequency_penalty=0.5,   # strong anti-repetition
                 presence_penalty=0.3,
+                timeout=10.0,            # H4: prevent indefinite block on network stall
             )
 
             response = completion.choices[0].message.content
@@ -214,7 +215,9 @@ class AssistantAgent:
         except Exception as e:
             print(f"[AssistantAgent] Groq error: {e}")
             fallback = self._get_fallback_response(user_input)
-            self.conversation_history.append({"role": "assistant", "content": fallback})
+            # M11: Do NOT append API-failure fallback to conversation_history.
+            # Appending non-LLM placeholder text pollutes the context window
+            # and can confuse the model on subsequent turns.
             return fallback
 
 
@@ -234,7 +237,7 @@ class AssistantAgent:
         if any(w in lowered for w in ("hello", "hi", "hey", "good morning", "good evening", "good afternoon")):
             hour = datetime.now().hour
             if hour < 12:
-                return "Good morning. I'm A-Care — the instrument assistant here."
+                return "Good morning. I'm A-Care — the clinical assistant here."
             elif hour < 17:
                 return "Good afternoon. I'm A-Care. Let me know How can I help you?"
             else:
